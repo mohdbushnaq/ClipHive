@@ -1,0 +1,38 @@
+{
+  "productName": "ClipHive",
+  "version": "0.1.0",
+  "identifier": "com.cliphive.app",
+  "build": {
+    "beforeBuildCommand": "npm run build",
+    "devUrl": "http://localhost:5173",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "title": "ClipHive — Every video on any page",
+        "width": 960,
+        "height": 680,
+        "minWidth": 720,
+        "minHeight": 500,
+        "resizable": true,
+        "center": true
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis"],
+    "resources": [
+      "resources/yt-dlp.exe",
+      "resources/ffmpeg.exe",
+      "resources/ffprobe.exe"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ]
+  }
+}

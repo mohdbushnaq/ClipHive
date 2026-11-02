@@ -1,0 +1,26 @@
+# ── Rust / Tauri build output ────────────────────────────────
+src-tauri/target/
+
+# ── Node / frontend ──────────────────────────────────────────
+node_modules/
+dist/
+*.local
+
+# ── Bundled binaries (fetch via scripts/fetch-resources.ps1) ─
+# These are large (~350 MB) and intentionally kept out of git.
+src-tauri/resources/
+
+# ── Logs & temp ───────────────────────────────────────────────
+logs/
+*.log
+npm-debug.log*
+
+# ── OS cruft ──────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Editors / IDEs ────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp

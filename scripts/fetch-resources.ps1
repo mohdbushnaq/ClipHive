@@ -1,0 +1,65 @@
+# =============================================================================
+# fetch-resources.ps1
+# Downloads the bundled binaries ClipHive needs to build and run:
+#   - yt-dlp.exe  (video extraction engine)
+#   - ffmpeg.exe  (codec / merge support)
+#   - ffprobe.exe (format detection)
+#
+# They are stored in src-tauri/resources/ and git-ignored on purpose so the
+# repository stays small. Run this once before building:
+#
+#     powershell -ExecutionPolicy Bypass -File scripts/fetch-resources.ps1
+# =============================================================================
+
+$ErrorActionPreference = "Stop"
+
+# Resolve paths relative to this script (scripts/ -> repo root)
+$root    = Split-Path -Parent $PSScriptRoot
+$resDir  = Join-Path $root "src-tauri\resources"
+$tempDir = Join-Path $env:TEMP ("cliphive-fetch-" + [Guid]::NewGuid().ToString("N"))
+
+Write-Host "ClipHive resource fetcher" -ForegroundColor Cyan
+Write-Host "Target folder: $resDir" -ForegroundColor DarkGray
+
+New-Item -ItemType Directory -Force -Path $resDir  | Out-Null
+New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
+
+function Download([string]$url, [string]$out) {
+    Write-Host "  -> $url"
+    Invoke-WebRequest -Uri $url -OutFile $out -UseBasicParsing
+}
+
+# --- 1) yt-dlp (single-file Windows executable from official releases) -------
+$yt = Join-Path $resDir "yt-dlp.exe"
+if (-not (Test-Path $yt)) {
+    Write-Host "[1/2] Downloading yt-dlp..." -ForegroundColor Yellow
+    Download "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" $yt
+} else {
+    Write-Host "[1/2] yt-dlp.exe already present — skipped." -ForegroundColor Green
+}
+
+# --- 2) ffmpeg + ffprobe (from the gyan.dev essentials build) ----------------
+$ffmpeg  = Join-Path $resDir "ffmpeg.exe"
+$ffprobe = Join-Path $resDir "ffprobe.exe"
+if (-not ((Test-Path $ffmpeg) -and (Test-Path $ffprobe))) {
+    Write-Host "[2/2] Downloading ffmpeg + ffprobe..." -ForegroundColor Yellow
+    $zip = Join-Path $tempDir "ffmpeg.zip"
+    Download "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" $zip
+
+    Expand-Archive -Path $zip -DestinationPath $tempDir -Force
+
+    # The archive nests the binaries under a versioned folder's bin/.
+    $found = Get-ChildItem -Path $tempDir -Recurse -Filter "ffmpeg.exe" | Select-Object -First 1
+    if ($null -eq $found) { throw "ffmpeg.exe was not found inside the downloaded archive." }
+
+    Copy-Item (Join-Path $found.DirectoryName "ffmpeg.exe")  $ffmpeg  -Force
+    Copy-Item (Join-Path $found.DirectoryName "ffprobe.exe") $ffprobe -Force
+} else {
+    Write-Host "[2/2] ffmpeg + ffprobe already present — skipped." -ForegroundColor Green
+}
+
+# --- Cleanup ------------------------------------------------------------------
+Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
+
+Write-Host "`nDone. Bundled binaries are now in:" -ForegroundColor Cyan
+Get-ChildItem $resDir | Sort-Object Name | Format-Table Name, @{Label="Size (MB)";Expression={[math]::Round($_.Length/1MB, 2)}} -AutoSize

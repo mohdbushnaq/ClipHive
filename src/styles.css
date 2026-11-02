@@ -1,0 +1,96 @@
+/* ClipHive — Desktop App Styles */
+:root {
+  --bg: #121110;
+  --surface: #1c1a18;
+  --surface-raised: #2a2725;
+  --border: #3a3530;
+  --border-input: #6b6158;
+  --text: #f5f2ef;
+  --text-muted: #a89e94;
+  --accent: #d4920a;
+  --accent-bright: #f5c842;
+  --on-accent: #1a1500;
+  --danger: #ef4455;
+  --success: #16a34a;
+  --warning: #ca8a04;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+}
+
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter', system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); min-height: 100vh; display: flex; flex-direction: column; }
+
+/* Nav */
+.topnav { display: flex; align-items: center; justify-content: space-between; padding: 0 20px; height: 56px; border-bottom: 1px solid var(--border); background: var(--surface); }
+.logo { display: flex; align-items: center; gap: 8px; font-size: 18px; font-weight: 600; }
+.tabs { display: flex; gap: 4px; }
+.tab { padding: 8px 16px; border: none; background: transparent; color: var(--text-muted); font-size: 14px; cursor: pointer; border-radius: var(--radius-sm); transition: all .15s; }
+.tab:hover { color: var(--text); }
+.tab.active { color: var(--text); background: var(--surface-raised); }
+
+/* Main */
+main { flex: 1; max-width: 800px; margin: 0 auto; padding: 24px 20px; width: 100%; }
+h1 { font-size: 22px; margin-bottom: 4px; }
+.subtitle { color: var(--text-muted); font-size: 14px; margin-bottom: 20px; }
+.tab-content { display: none; }
+.tab-content.active { display: block; }
+
+/* Inputs */
+.input-row { display: flex; gap: 8px; margin-bottom: 16px; }
+input[type="url"], input[type="text"], input[type="number"], input[type="search"], select, textarea { height: 42px; padding: 0 12px; border-radius: var(--radius-md); background: var(--surface-raised); border: 1px solid var(--border-input); color: var(--text); font-size: 14px; outline: none; transition: border-color .15s, box-shadow .15s; }
+input:focus, select:focus, textarea:focus { border-color: var(--accent-bright); box-shadow: 0 0 0 3px rgba(245,200,66,.15); }
+textarea { height: auto; min-height: 140px; padding: 12px; font-family: 'JetBrains Mono', monospace; font-size: 13px; resize: vertical; }
+input[type="url"] { flex: 1; }
+
+/* Buttons */
+.btn { display: inline-flex; align-items: center; gap: 6px; padding: 0 18px; height: 42px; border: none; border-radius: var(--radius-md); font-size: 14px; font-weight: 500; cursor: pointer; transition: all .15s; }
+.btn-primary { background: var(--accent); color: var(--on-accent); }
+.btn-primary:hover { filter: brightness(1.1); }
+.btn-secondary { background: transparent; border: 1px solid var(--border-input); color: var(--text); }
+.btn-secondary:hover { background: var(--surface-raised); }
+.btn-lg { height: 48px; width: 100%; justify-content: center; font-size: 16px; margin-top: 12px; }
+.btn-row { display: flex; gap: 8px; margin-top: 12px; }
+.link-btn { background: none; border: none; color: var(--accent-bright); font-size: 13px; cursor: pointer; padding: 0; }
+.link-btn.muted { color: var(--text-muted); }
+
+/* Form */
+.form-row { display: flex; gap: 20px; align-items: center; margin: 16px 0; flex-wrap: wrap; }
+label { font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
+.format-group { display: flex; gap: 8px; flex-wrap: wrap; }
+.format-group label { flex-direction: row; align-items: center; padding: 6px 12px; border-radius: var(--radius-pill); border: 1px solid var(--border-input); cursor: pointer; font-size: 13px; }
+.format-group input[type="radio"] { margin-right: 4px; accent-color: var(--accent); }
+
+/* Progress */
+.progress-bar { height: 6px; background: var(--surface-raised); border-radius: var(--radius-pill); overflow: hidden; margin-top: 8px; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: var(--radius-pill); transition: width .5s ease; }
+.progress-fill.complete { background: var(--success); }
+.download-item { padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 8px; background: var(--surface); }
+.download-item .title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.download-item .meta { font-size: 12px; color: var(--text-muted); margin-top: 4px; display: flex; gap: 12px; }
+.download-item .actions { display: flex; gap: 6px; margin-top: 8px; }
+
+/* Scan results */
+.scan-actions { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13px; }
+#scan-list { list-style: none; max-height: 300px; overflow-y: auto; margin-bottom: 12px; }
+#scan-list li label { flex-direction: row; align-items: center; gap: 10px; padding: 10px 12px; border-radius: var(--radius-sm); cursor: pointer; border: 1px solid transparent; transition: all .15s; font-size: 14px; }
+#scan-list li label:hover { background: var(--surface-raised); }
+#scan-list li input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+.source-badge { font-size: 10px; padding: 2px 8px; border-radius: var(--radius-pill); background: var(--surface-raised); color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; margin-left: auto; }
+
+/* Settings */
+fieldset { border: 1px solid var(--border); border-radius: var(--radius-md); padding: 16px; margin-bottom: 16px; }
+legend { font-size: 12px; text-transform: uppercase; letter-spacing: .5px; color: var(--text-muted); padding: 0 8px; }
+fieldset label { margin-bottom: 12px; }
+fieldset select, fieldset input { width: 100%; max-width: 300px; }
+
+/* States */
+.empty-state { text-align: center; padding: 48px 0; color: var(--text-muted); }
+#error-msg { color: var(--danger); font-size: 14px; margin-bottom: 12px; }
+#settings-saved { color: var(--success); font-size: 13px; margin-left: 12px; }
+
+/* Library */
+#lib-search { width: 100%; margin-bottom: 16px; }
+#library-list { list-style: none; }
+#library-list li { display: flex; align-items: center; justify-content: space-between; padding: 12px; border-radius: var(--radius-sm); background: var(--surface); margin-bottom: 6px; }
