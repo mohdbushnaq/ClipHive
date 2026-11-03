@@ -24,3 +24,8 @@ desktop.ini
 .vscode/
 .idea/
 *.swp
+
+# ── Updater signing secret (NEVER commit the private key) ─────
+tauri-updater.key
+*.sig
+update-manifest.json

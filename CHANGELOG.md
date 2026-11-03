@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- In-app auto-updates: **Settings → Check for updates** downloads the latest release, verifies its signature, installs it over the existing version and relaunches — no manual reinstall.
+- Updates are served from GitHub Releases via a signed `update-manifest.json`; each release is signed with a Tauri updater key (private key stays out of the repo).
+
 ## [0.1.0] - 2026-11-02
 
 ### Added

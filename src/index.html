@@ -11,14 +11,13 @@
   <nav class="topnav">
     <div class="logo">
       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-        <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="var(--accent-bright)" stroke-width="1.5" fill="rgba(245,200,66,.1)"/>
+        <path d="M12 2L3 7v10l9 5 9-5V7l-9-5z" stroke="var(--accent-bright)" stroke-width="1.5" fill="#121110"/>
         <path d="M10 8.5L16 12l-6 3.5v-7z" fill="var(--accent-bright)"/>
       </svg>
       <span>ClipHive</span>
     </div>
     <div class="tabs">
       <button class="tab active" data-tab="download">Download</button>
-      <button class="tab" data-tab="batch">Batch</button>
       <button class="tab" data-tab="library">Library</button>
       <button class="tab" data-tab="settings">Settings</button>
     </div>
@@ -26,23 +25,35 @@
 
   <!-- Main content -->
   <main id="app">
-    
+
     <!-- DOWNLOAD TAB -->
     <section id="tab-download" class="tab-content active">
       <h1>Download Videos</h1>
-      <p class="subtitle">Paste any URL. We'll find the video — or all videos on that page.</p>
+      <p class="subtitle">Paste one or more URLs (separate with a comma or new line). We'll find the video — or every video on a page.</p>
 
       <div class="input-row">
-        <input type="url" id="url-input" placeholder="Paste a video URL or any page with embedded videos…" />
+        <textarea id="url-input" rows="2" placeholder="https://youtube.com/watch?v=…&#10;or paste several, one per line / separated by commas"></textarea>
+      </div>
+      <div class="btn-row input-actions">
         <button id="btn-analyze" class="btn btn-primary">Get Video</button>
         <button id="btn-scan" class="btn btn-secondary">Scan Page</button>
       </div>
 
+      <!-- Save location (quick change) -->
+      <div class="save-loc-row">
+        <span class="muted">Save to</span>
+        <span id="dl-path-display" class="path-text" title="">…</span>
+        <button id="btn-change-dl-path" class="link-btn">Change…</button>
+      </div>
+
       <p id="error-msg" role="alert" hidden></p>
 
-      <!-- Quality selection (appears after analyze) -->
+      <!-- Single video: quality selection -->
       <div id="quality-panel" hidden>
-        <h2 id="video-title"></h2>
+        <div class="video-head">
+          <img id="single-thumb" class="thumb" alt="" onerror="this.style.display='none'" />
+          <h2 id="video-title"></h2>
+        </div>
         <div class="form-row">
           <label>Quality <select id="sel-quality"></select></label>
           <div class="format-group" role="radiogroup" aria-label="Format">
@@ -52,6 +63,13 @@
           </div>
         </div>
         <button id="btn-queue" class="btn btn-primary btn-lg">Add to Download Queue</button>
+      </div>
+
+      <!-- Multiple videos -->
+      <div id="multi-results" hidden>
+        <h2><span id="multi-count"></span> videos ready</h2>
+        <ul id="multi-list" role="list"></ul>
+        <button id="btn-queue-multi" class="btn btn-primary btn-lg">Download All</button>
       </div>
 
       <!-- Page scan results -->
@@ -66,23 +84,11 @@
         <button id="btn-queue-scanned" class="btn btn-primary btn-lg">Download Selected</button>
       </div>
 
-      <!-- Active downloads -->
+      <!-- Active / completed downloads -->
       <section id="downloads-section" hidden>
         <h2>Downloads</h2>
         <div id="downloads-list"></div>
       </section>
-    </section>
-
-    <!-- BATCH TAB -->
-    <section id="tab-batch" class="tab-content">
-      <h1>Batch Download</h1>
-      <p class="subtitle">Paste multiple video URLs (one per line) to download them all at once.</p>
-      <textarea id="batch-input" rows="8" placeholder="https://youtube.com/watch?v=...&#10;https://vimeo.com/123456&#10;https://tiktok.com/@user/video/..."></textarea>
-      <div class="btn-row">
-        <button id="btn-batch-validate" class="btn btn-primary">Validate All</button>
-        <button id="btn-batch-queue" class="btn btn-secondary" hidden>Queue Valid Videos</button>
-      </div>
-      <div id="batch-results"></div>
     </section>
 
     <!-- LIBRARY TAB -->
@@ -99,7 +105,19 @@
     <!-- SETTINGS TAB -->
     <section id="tab-settings" class="tab-content">
       <h1>Settings</h1>
-      
+
+      <fieldset>
+        <legend>Download Location</legend>
+        <label>Save downloads to
+          <span class="path-text" id="set-path-display">…</span>
+        </label>
+        <button id="btn-browse-path" class="btn btn-secondary">Browse for a folder…</button>
+        <label class="check-label">
+          <input type="checkbox" id="set-subfolder" checked />
+          Create a "ClipHive" subfolder inside the chosen location
+        </label>
+      </fieldset>
+
       <fieldset>
         <legend>Download Defaults</legend>
         <label>Default Quality
@@ -136,8 +154,17 @@
         </label>
       </fieldset>
 
-      <button id="btn-save-settings" class="btn btn-primary">Save Settings</button>
-      <span id="settings-saved" role="status" hidden>Saved ✓</span>
+      <fieldset>
+        <legend>App Updates</legend>
+        <p class="muted">Current version: <strong id="app-version">…</strong></p>
+        <button id="btn-check-update" class="btn">Check for updates…</button>
+        <span id="update-status" role="status" hidden></span>
+      </fieldset>
+
+      <div class="save-row">
+        <button id="btn-save-settings" class="btn btn-primary">Save Settings</button>
+        <span id="settings-saved" role="status" hidden>Saved ✓</span>
+      </div>
     </section>
 
   </main>

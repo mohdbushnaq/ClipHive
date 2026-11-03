@@ -12,6 +12,10 @@ pub struct AppSettings {
     pub proxy_url: Option<String>,
     pub theme: String,          // "dark" | "light" | "system"
     pub filename_pattern: String,
+    /// Base folder where downloads are saved (default = the user's Videos folder).
+    pub download_path: Option<String>,
+    /// When true, files go into <download_path>/ClipHive ; when false, directly in <download_path>.
+    pub create_subfolder: bool,
 }
 
 impl Default for AppSettings {
@@ -24,6 +28,8 @@ impl Default for AppSettings {
             proxy_url: None,
             theme: "dark".into(),
             filename_pattern: "{title}_{quality}".into(),
+            download_path: dirs::video_dir().map(|p| p.to_string_lossy().to_string()),
+            create_subfolder: true,
         }
     }
 }

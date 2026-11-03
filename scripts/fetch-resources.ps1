@@ -35,7 +35,7 @@ if (-not (Test-Path $yt)) {
     Write-Host "[1/2] Downloading yt-dlp..." -ForegroundColor Yellow
     Download "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" $yt
 } else {
-    Write-Host "[1/2] yt-dlp.exe already present — skipped." -ForegroundColor Green
+    Write-Host "[1/2] yt-dlp.exe already present, skipping." -ForegroundColor Green
 }
 
 # --- 2) ffmpeg + ffprobe (from the gyan.dev essentials build) ----------------
@@ -55,11 +55,12 @@ if (-not ((Test-Path $ffmpeg) -and (Test-Path $ffprobe))) {
     Copy-Item (Join-Path $found.DirectoryName "ffmpeg.exe")  $ffmpeg  -Force
     Copy-Item (Join-Path $found.DirectoryName "ffprobe.exe") $ffprobe -Force
 } else {
-    Write-Host "[2/2] ffmpeg + ffprobe already present — skipped." -ForegroundColor Green
+    Write-Host "[2/2] ffmpeg + ffprobe already present, skipping." -ForegroundColor Green
 }
 
 # --- Cleanup ------------------------------------------------------------------
 Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
 
-Write-Host "`nDone. Bundled binaries are now in:" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "Done. Bundled binaries are now in:" -ForegroundColor Cyan
 Get-ChildItem $resDir | Sort-Object Name | Format-Table Name, @{Label="Size (MB)";Expression={[math]::Round($_.Length/1MB, 2)}} -AutoSize

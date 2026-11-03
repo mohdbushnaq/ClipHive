@@ -94,3 +94,46 @@ fieldset select, fieldset input { width: 100%; max-width: 300px; }
 #lib-search { width: 100%; margin-bottom: 16px; }
 #library-list { list-style: none; }
 #library-list li { display: flex; align-items: center; justify-content: space-between; padding: 12px; border-radius: var(--radius-sm); background: var(--surface); margin-bottom: 6px; }
+
+/* --- Thumbnails, save location, download cards, library, menus --- */
+.muted { color: var(--text-muted); font-size: 13px; }
+.small { font-size: 12px; }
+.path-text { font-family:'JetBrains Mono',monospace; font-size:12.5px; background:var(--surface-raised); padding:4px 8px; border-radius:6px; max-width:360px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; display:inline-block; vertical-align:middle; }
+
+.input-actions { margin-top:10px; margin-bottom:6px; }
+#url-input { width:100%; min-height:52px; }
+.save-loc-row { display:flex; align-items:center; gap:8px; margin:6px 0 4px; flex-wrap:wrap; }
+
+.video-head { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+.thumb { width:96px; height:54px; object-fit:cover; border-radius:var(--radius-sm); background:#000; flex-shrink:0; }
+.thumb-sm { width:48px; height:28px; object-fit:cover; border-radius:4px; background:#000; flex-shrink:0; }
+
+#multi-list, #scan-list { list-style:none; max-height:320px; overflow-y:auto; margin-bottom:12px; }
+#multi-list li label { display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:var(--radius-sm); cursor:pointer; border:1px solid transparent; font-size:14px; }
+#multi-list li label:hover { background:var(--surface-raised); }
+#multi-list input[type="checkbox"]{ accent-color:var(--accent); width:16px; height:16px; }
+.ml-title { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+.dl-row { display:flex; gap:12px; align-items:center; }
+.dl-body { flex:1; min-width:0; }
+.download-item .title { font-size:14px; font-weight:500; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; margin-bottom:6px; }
+.dl-status { display:block; font-size:12px; color:var(--text-muted); margin-top:6px; }
+.dl-status.done { color:var(--success); font-weight:600; }
+.dl-status.failed { color:var(--danger); }
+.check { display:inline-block; width:18px; height:18px; line-height:18px; text-align:center; border-radius:50%; background:var(--success); color:#fff; margin-right:6px; font-size:12px; vertical-align:middle; }
+.download-item .actions, .lib-actions { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; align-items:center; }
+
+.btn.sm { height:34px; padding:0 14px; font-size:13px; }
+
+.lib-item { position:relative; display:block; padding:12px; border-radius:var(--radius-sm); background:var(--surface); margin-bottom:8px; }
+.lib-actions { justify-content:flex-end; }
+.dots-btn { width:34px; height:34px; border-radius:6px; border:1px solid var(--border-input); background:transparent; color:var(--text-muted); font-size:18px; line-height:1; cursor:pointer; padding:0; }
+.dots-btn:hover { background:var(--surface-raised); color:var(--text); }
+.ctx-menu { position:absolute; right:12px; top:46px; z-index:20; min-width:180px; background:var(--surface-raised); border:1px solid var(--border); border-radius:var(--radius-sm); box-shadow:0 8px 24px rgba(0,0,0,.5); padding:6px; }
+.ctx-item { display:block; width:100%; text-align:left; background:none; border:none; color:var(--text); font-size:13.5px; padding:9px 10px; border-radius:6px; cursor:pointer; }
+.ctx-item:hover { background:rgba(255,255,255,.06); }
+.ctx-item.danger { color:var(--danger); }
+
+.check-label { flex-direction:row !important; align-items:center; gap:8px; font-size:13.5px; margin-top:4px; cursor:pointer; }
+.check-label input[type="checkbox"]{ accent-color:var(--accent); width:16px; height:16px; margin:0; }
+.save-row { display:flex; align-items:center; gap:8px; margin-top:4px; }

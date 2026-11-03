@@ -31,6 +31,9 @@ Paste multiple video URLs (one per line), validate them all at once, see which a
 ### 📁 Library
 Browse all your completed downloads. Search by title, open the file's folder in Explorer, or remove entries from history.
 
+### 🔄 Auto-Updates
+Check for new versions right inside the app (**Settings → Check for updates**). When an update is available, ClipHive downloads it, verifies its signature, installs it over your existing version, and relaunches — no manual uninstall/reinstall needed. Current version is shown at the top of Settings.
+
 ---
 
 ## Why ClipHive?
@@ -138,6 +141,27 @@ The release installer will be at:
 src-tauri/target/release/bundle/nsis/ClipHive_0.1.0_x64-setup.exe
 ```
 
+### Releasing an update (for maintainers)
+
+To ship a new version that existing installs can auto-update to:
+
+1. Bump the version in both `src-tauri/tauri.conf.json` and `package.json`.
+2. Build the installer:
+   ```bash
+   npx tauri build
+   ```
+3. Sign it and generate `update-manifest.json` (uses your private key, kept out of git):
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File scripts/publish-update.ps1 -Version X.Y.Z -Notes "What changed"
+   ```
+4. On GitHub, create a new **Release** tagged `vX.Y.Z` and attach **both** files:
+   - the installer (`ClipHive_X.Y.Z_x64-setup.exe`)
+   - `update-manifest.json`
+
+Existing installs will then find it via **Settings → Check for updates**.
+
+> The updater verifies each release's signature against a public key baked into the app. Keep your private signing key (`tauri-updater.key`) safe — if you lose it, existing users can no longer receive signed updates. It is git-ignored on purpose and must never be committed.
+
 ### Project structure
 
 ```
@@ -148,7 +172,8 @@ cliphive/
 │   └── styles.css          # ClipHive design system (dark theme, amber/gold)
 ├── src-tauri/              # Rust backend (Tauri 2)
 │   ├── Cargo.toml          # Rust dependencies
-│   ├── tauri.conf.json     # App config, window settings, bundle options
+│   ├── tauri.conf.json     # App config, window settings, bundle + updater options
+│   ├── capabilities/       # Tauri 2 ACL permissions (updater, process)
 │   ├── icons/icon.ico      # App icon (multi-resolution)
 │   ├── resources/          # Bundled binaries (yt-dlp, ffmpeg)
 │   └── src/
@@ -158,7 +183,8 @@ cliphive/
 │       ├── page_scan/      # Page scanner (HTML → video extraction)
 │       └── settings/       # Settings persistence (%APPDATA%)
 ├── scripts/
-│   └── fetch-resources.ps1 # Downloads bundled binaries (yt-dlp, ffmpeg) for building
+│   ├── fetch-resources.ps1 # Downloads bundled binaries (yt-dlp, ffmpeg) for building
+│   └── publish-update.ps1  # Signs a build + generates update-manifest.json for releases
 ├── package.json            # Frontend build tooling (Vite + Tauri CLI)
 ├── vite.config.js          # Vite configuration
 ├── LICENSE                 # MIT License

@@ -2,8 +2,8 @@ pub mod download;
 pub mod page_scan;
 pub mod settings;
 
-use tauri::Emitter;
-use serde::Serialize;
+use tauri::{Emitter, Manager};
+use serde::{Serialize, Deserialize};
 use std::path::PathBuf;
 use std::sync::Mutex;
 use tokio::process::Command;
@@ -52,13 +52,68 @@ fn ffmpeg_dir() -> Option<PathBuf> {
     None
 }
 
+/// Resolve (and create) the effective download output directory from settings.
+fn resolve_output_dir() -> PathBuf {
+    let s = settings::load().unwrap_or_default();
+    let base = s.download_path
+        .as_ref()
+        .map(|p| p.trim())
+        .filter(|p| !p.is_empty())
+        .map(PathBuf::from)
+        .or_else(|| dirs::video_dir())
+        .unwrap_or_else(|| PathBuf::from("."));
+    let dir = if s.create_subfolder { base.join("ClipHive") } else { base };
+    std::fs::create_dir_all(&dir).ok();
+    dir
+}
+
+/// Find the most recently modified media file in a directory (locates a finished download).
+fn latest_media_file(dir: &std::path::Path) -> Option<String> {
+    let exts = ["mp4","webm","mkv","mov","avi","mp3","m4a","flac","wav"];
+    let mut best: Option<(std::time::SystemTime, PathBuf)> = None;
+    if let Ok(rd) = std::fs::read_dir(dir) {
+        for e in rd.flatten() {
+            let p = e.path();
+            if !p.is_file() { continue; }
+            let ext = p.extension().and_then(|x| x.to_str()).unwrap_or("").to_lowercase();
+            if !exts.contains(&ext.as_str()) { continue; }
+            let md = match e.metadata() { Ok(m) => m, Err(_) => continue };
+            let mt = match md.modified() { Ok(t) => t, Err(_) => continue };
+            match &best {
+                Some((t, _)) => { if mt > *t { best = Some((mt, p)); } }
+                None => best = Some((mt, p)),
+            }
+        }
+    }
+    best.map(|(_, p)| p.to_string_lossy().to_string())
+}
+
+// --- Library persistence (completed downloads) ---
+fn data_dir() -> PathBuf {
+    dirs::config_dir().unwrap_or_else(|| PathBuf::from(".")).join("cliphive")
+}
+fn library_path() -> PathBuf { data_dir().join("library.json") }
+fn load_library() -> Vec<DownloadItem> {
+    let p = library_path();
+    if !p.exists() { return vec![]; }
+    std::fs::read_to_string(p).ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+fn persist_library(items: &[DownloadItem]) {
+    let p = library_path();
+    if let Some(parent) = p.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Ok(json) = serde_json::to_string_pretty(items) { let _ = std::fs::write(p, json); }
+}
+
 // --- Shared state ---
 
 struct AppState {
     downloads: Mutex<Vec<DownloadItem>>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
 pub struct DownloadItem {
     pub id: String,
     pub url: String,
@@ -71,10 +126,26 @@ pub struct DownloadItem {
     pub eta_sec: Option<u64>,
     pub file_path: Option<String>,
     pub error: Option<String>,
+    #[serde(default)]
+    pub thumbnail_url: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<i64>,
+}
+
+impl Default for DownloadItem {
+    fn default() -> Self {
+        Self {
+            id: String::new(), url: String::new(), title: String::new(),
+            quality: String::new(), format: String::new(), status: String::new(),
+            progress_pct: 0.0, speed_bps: None, eta_sec: None,
+            file_path: None, error: None, thumbnail_url: None, completed_at: None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct VideoInfo {
+    pub url: String,
     pub title: String,
     pub thumbnail_url: Option<String>,
     pub duration_sec: Option<u64>,
@@ -117,9 +188,11 @@ pub struct PageScanResult {
 #[tauri::command]
 async fn analyze_url(url: String) -> Result<VideoInfo, String> {
     let ytdlp = resource_path("yt-dlp.exe");
-    
+
     // Add ffmpeg dir to PATH for this process
     let mut cmd = Command::new(&ytdlp);
+    #[cfg(windows)]
+    { use std::os::windows::process::CommandExt; const CREATE_NO_WINDOW: u32 = 0x08000000; cmd.creation_flags(CREATE_NO_WINDOW); }
     if let Some(dir) = ffmpeg_dir() {
         let path_env = format!("{};{}", dir.display(), std::env::var("PATH").unwrap_or_default());
         cmd.env("PATH", path_env);
@@ -141,6 +214,7 @@ async fn analyze_url(url: String) -> Result<VideoInfo, String> {
         .map_err(|e| format!("Failed to parse yt-dlp output: {}", e))?;
 
     Ok(VideoInfo {
+        url: url.clone(),
         title: data["title"].as_str().unwrap_or("Unknown").to_string(),
         thumbnail_url: data["thumbnail"].as_str().map(String::from),
         duration_sec: data["duration"].as_u64(),
@@ -158,12 +232,14 @@ async fn start_download(
     url: String,
     quality: String,
     format: String,
+    title: Option<String>,
+    thumbnail_url: Option<String>,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
 
     // Build yt-dlp args
     let mut args: Vec<String> = vec![];
-    
+
     if format.starts_with("audio_") {
         args.push("-x".into());
         args.push("--audio-format".into());
@@ -183,24 +259,20 @@ async fn start_download(
         args.push(if format == "webm" { "webm" } else { "mp4" }.into());
     }
 
-    // Output to downloads folder with template
-    let download_dir = dirs::download_dir()
-        .unwrap_or_else(|| std::path::PathBuf::from("."))
-        .join("ClipHive");
-    std::fs::create_dir_all(&download_dir).ok();
-    
+    // Output to the configured download folder (created if missing)
+    let output_dir = resolve_output_dir();
     args.push("-o".into());
-    args.push(download_dir.join("%(title)s.%(ext)s").to_string_lossy().to_string());
+    args.push(output_dir.join("%(title)s.%(ext)s").to_string_lossy().to_string());
     args.push("--no-playlist".into());
     args.push(url.clone());
 
-    // Add to state as queued
+    // Add to state as downloading (with title/thumbnail for the UI)
     {
         let mut downloads = state.downloads.lock().unwrap();
         downloads.insert(0, DownloadItem {
             id: id.clone(),
             url: url.clone(),
-            title: "Downloading…".into(),
+            title: title.clone().filter(|t| !t.trim().is_empty()).unwrap_or_else(|| "Downloading…".into()),
             quality: quality.clone(),
             format: format.clone(),
             status: "downloading".into(),
@@ -209,13 +281,16 @@ async fn start_download(
             eta_sec: None,
             file_path: None,
             error: None,
+            thumbnail_url: thumbnail_url.clone(),
+            completed_at: None,
         });
     }
 
-    // Spawn yt-dlp in background task
+    // Spawn yt-dlp in a background task (hidden window on Windows)
     let id_clone = id.clone();
     let app_clone = app_handle.clone();
-    
+    let output_dir_clone = output_dir.clone();
+
     tokio::spawn(async move {
         let ytdlp = resource_path("yt-dlp.exe");
         let mut cmd = Command::new(&ytdlp);
@@ -223,10 +298,12 @@ async fn start_download(
             let path_env = format!("{};{}", dir.display(), std::env::var("PATH").unwrap_or_default());
             cmd.env("PATH", path_env);
         }
+        #[cfg(windows)]
+        { use std::os::windows::process::CommandExt; const CREATE_NO_WINDOW: u32 = 0x08000000; cmd.creation_flags(CREATE_NO_WINDOW); }
 
         let mut child = match cmd
             .args(&args)
-            .stdout(std::process::Stdio::null()) // discard stdout, only need stderr for progress
+            .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::piped())
             .spawn()
         {
@@ -239,14 +316,13 @@ async fn start_download(
             }
         };
 
-        // Read stdout for progress (yt-dlp prints progress to stderr by default)
+        // Read stderr for progress (yt-dlp prints progress to stderr)
         if let Some(stderr) = child.stderr.take() {
             use tokio::io::AsyncBufReadExt;
             use tokio::io::BufReader;
             let mut lines = BufReader::new(stderr).lines();
 
             while let Ok(Some(line)) = lines.next_line().await {
-                // Parse progress: "[download]  45.2% of ~ 10.5MiB at 2.3MiB/s ETA 00:12"
                 if line.contains("[download]") && line.contains("%") {
                     let pct = extract_pct(&line);
                     let speed = extract_speed(&line);
@@ -263,17 +339,38 @@ async fn start_download(
             }
         }
 
-        let status = child.wait().await;
-        
-        if status.map(|s| s.success()).unwrap_or(false) {
-            let _ = app_clone.emit("download-event", serde_json::json!({
-                "id": id_clone, "status": "complete", "progress_pct": 100.0
-            }));
-        } else {
-            let _ = app_clone.emit("download-event", serde_json::json!({
-                "id": id_clone, "status": "failed", "error": "Download failed"
-            }));
+        let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
+        let file_path = if ok { latest_media_file(&output_dir_clone) } else { None };
+        let dir_str = output_dir_clone.to_string_lossy().to_string();
+
+        // Update shared state with the final result, then persist completed items
+        let state = app_clone.state::<AppState>();
+        {
+            let mut dl = state.downloads.lock().unwrap();
+            if let Some(item) = dl.iter_mut().find(|d| d.id == id_clone) {
+                item.status = if ok { "complete".into() } else { "failed".into() };
+                if ok {
+                    item.progress_pct = 100.0;
+                    item.file_path = file_path.clone();
+                    item.completed_at = Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0));
+                }
+            }
         }
+
+        if ok {
+            let completed: Vec<DownloadItem> = state.downloads.lock().unwrap()
+                .iter().filter(|d| d.status == "complete").cloned().collect();
+            persist_library(&completed);
+        }
+
+        let _ = app_clone.emit("download-event", serde_json::json!({
+            "id": id_clone,
+            "status": if ok { "complete" } else { "failed" },
+            "progress_pct": if ok { serde_json::json!(100.0) } else { serde_json::Value::Null },
+            "file_path": file_path,
+            "dir": dir_str,
+            "error": if ok { serde_json::Value::Null } else { serde_json::json!("Download failed") }
+        }));
     });
 
     Ok(id)
@@ -320,11 +417,17 @@ fn reveal_in_folder(path: String) -> Result<(), String> {
 
     #[cfg(windows)]
     {
-        std::process::Command::new("explorer")
-            .arg("/select,")
-            .arg(path)
-            .spawn()
-            .map_err(|e| e.to_string())?;
+        if p.is_dir() {
+            std::process::Command::new("explorer")
+                .arg(path)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        } else {
+            std::process::Command::new("explorer")
+                .args(["/select,", &path])
+                .spawn()
+                .map_err(|e| e.to_string())?;
+        }
     }
 
     #[cfg(target_os = "macos")]
@@ -342,6 +445,48 @@ fn reveal_in_folder(path: String) -> Result<(), String> {
             .arg(dir.to_string_lossy().to_string())
             .spawn()
             .map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+
+/// Open a media file with the system's default player
+#[tauri::command]
+fn play_file(path: String) -> Result<(), String> {
+    if !std::path::Path::new(&path).exists() {
+        return Err("File not found".into());
+    }
+    open::that(&path).map_err(|e| e.to_string())
+}
+
+/// Remove a download from the library and (optionally) delete its media file on disk
+#[tauri::command]
+fn delete_download(app_handle: tauri::AppHandle, id: String, delete_file: Option<bool>) -> Result<(), String> {
+    let remove_file = delete_file.unwrap_or(true);
+    let state = app_handle.state::<AppState>();
+
+    // Capture the file path before removing the item
+    let file_to_delete = {
+        let dl = state.downloads.lock().unwrap();
+        dl.iter().find(|d| d.id == id).and_then(|d| d.file_path.clone())
+    };
+
+    {
+        let mut dl = state.downloads.lock().unwrap();
+        dl.retain(|d| d.id != id);
+    }
+
+    // Persist the updated library (completed items only)
+    let completed: Vec<DownloadItem> = {
+        let dl = state.downloads.lock().unwrap();
+        dl.iter().filter(|d| d.status == "complete").cloned().collect()
+    };
+    persist_library(&completed);
+
+    if remove_file {
+        if let Some(fp) = file_to_delete {
+            let _ = std::fs::remove_file(&fp);
+        }
     }
 
     Ok(())
@@ -436,6 +581,12 @@ fn extract_eta(line: &str) -> Option<u64> {
     } else { None }
 }
 
+/// Return the running app's version string (shown in Settings → Updates).
+#[tauri::command]
+fn get_version() -> String {
+    env!("CARGO_PKG_VERSION").to_string()
+}
+
 // --- App entry point ---
 
 pub fn run() {
@@ -445,7 +596,9 @@ pub fn run() {
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState { downloads: Mutex::new(vec![]) })
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_process::init())
+        .manage(AppState { downloads: Mutex::new(load_library()) })
         .invoke_handler(tauri::generate_handler![
             analyze_url,
             start_download,
@@ -455,6 +608,9 @@ pub fn run() {
             scan_page,
             get_settings,
             save_settings,
+            get_version,
+            play_file,
+            delete_download,
         ])
         .run(tauri::generate_context!())
         .expect("error while running ClipHive");
