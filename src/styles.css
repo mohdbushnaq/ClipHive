@@ -90,7 +90,20 @@ fieldset select, fieldset input { width: 100%; max-width: 300px; }
 /* States */
 .empty-state { text-align: center; padding: 48px 0; color: var(--text-muted); }
 #error-msg { color: var(--danger); font-size: 14px; margin-bottom: 12px; }
-#settings-saved { color: var(--success); font-size: 13px; margin-left: 12px; }
+#settings-saved {
+  position: fixed;
+  top: 16px;
+  right: 18px;
+  z-index: 60;
+  color: var(--success);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 14px;
+  font-size: 13px;
+  box-shadow: 0 6px 20px rgba(0,0,0,.35);
+}
+#settings-saved.error { color: var(--danger); }
 
 /* Library */
 #lib-search { width: 100%; margin-bottom: 16px; }

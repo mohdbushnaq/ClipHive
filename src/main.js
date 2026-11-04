@@ -35,6 +35,24 @@ function showError(msg){ errorMsg.textContent = msg; errorMsg.hidden = false; }
 function clearError(){ errorMsg.hidden = true; errorMsg.textContent=''; }
 function errMsg(e){ return typeof e==='string' ? e : ((e && e.message) || String(e)); }
 
+// Thumbnail for a download card / library row:
+//  - use the thumbnail URL stored with the download,
+//  - otherwise derive a YouTube thumbnail from the video id in the URL,
+//  - otherwise show a small placeholder.
+function youtubeThumb(url){
+  const m = String(url || '').match(/(?:v=|youtu\.be\/|\/shorts\/|\/embed\/|\/live\/)([A-Za-z0-9_-]{11})/);
+  return m ? `https://i.ytimg.com/vi/${m[1]}/hqdefault.jpg` : null;
+}
+function thumbFor(item){
+  return (item && item.thumbnail_url) || youtubeThumb(item && item.url) || null;
+}
+const PLACEHOLDER_THUMB =
+  'data:image/svg+xml;utf8,' + encodeURIComponent(
+    '<svg xmlns="http://www.w3.org/2000/svg" width="160" height="90" viewBox="0 0 160 90">' +
+    '<rect width="160" height="90" rx="8" fill="#1d1c1a"/>' +
+    '<path d="M64 30v30l28-15z" fill="#4b4843"/></svg>'
+  );
+
 // --- Split pasted text into URLs (comma or newline separated) ---
 function splitUrls(text){
   return text.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
@@ -125,8 +143,9 @@ document.getElementById('btn-deselect-all').addEventListener('click', () => {
 
 // ================= QUEUE DOWNLOADS =================
 async function queueOne(url, quality, format, title, thumbnail){
-  const id = await invoke('start_download', { url, quality, format, title: title||null, thumbnail_url: thumbnail||null });
-  if (id) activeDl.set(id, { title: title||'Video', thumbnail: thumbnail||null, file_path:null, dir:null });
+  const thumb = thumbnail || youtubeThumb(url) || null;
+  const id = await invoke('start_download', { url, quality, format, title: title||null, thumbnail_url: thumb });
+  if (id) activeDl.set(id, { title: title||'Video', thumbnail: thumb, file_path:null, dir:null });
 }
 
 document.getElementById('btn-queue').addEventListener('click', async () => {
@@ -167,6 +186,8 @@ listen('download-event', (event) => {
   if (!meta){ meta = { title:'Video', thumbnail:null, file_path:null, dir:null }; activeDl.set(id, meta); }
   if (file_path) meta.file_path = file_path;
   if (dir) meta.dir = dir;
+  if (p.title) meta.title = p.title;
+  if (p.thumbnail_url) meta.thumbnail = p.thumbnail_url;
 
   const section=document.getElementById('downloads-section'); section.hidden=false;
   const list=document.getElementById('downloads-list');
@@ -191,6 +212,12 @@ listen('download-event', (event) => {
     list.prepend(card);
   }
 
+  const titleEl=card.querySelector('.title');
+  if (titleEl && meta.title) titleEl.textContent = meta.title;
+
+  const imgEl=card.querySelector('img.thumb');
+  if (imgEl && meta.thumbnail){ imgEl.src = meta.thumbnail; imgEl.style.display='block'; }
+
   const fill=card.querySelector('.progress-fill');
   const pctEl=card.querySelector('.progress-pct');
   const statusEl=card.querySelector('.dl-status');
@@ -208,7 +235,8 @@ listen('download-event', (event) => {
     if (speed_bps) bits.push(formatSpeed(speed_bps));
     if (eta_sec) bits.push(formatEta(eta_sec));
     if (bits.length) txt += '  ·  ' + bits.join('  ·  ');
-    statusEl.textContent=txt; statusEl.className='dl-status';
+    statusEl.textContent = p.note || txt;
+    statusEl.className='dl-status';
   } else if (status==='complete'){
     fill.style.width='100%'; fill.classList.add('complete'); pctEl.textContent='100%';
     statusEl.innerHTML='<span class="check">✓</span> Done'; statusEl.className='dl-status done';
@@ -254,8 +282,10 @@ async function renderLibrary(){
     const li=document.createElement('li'); li.className='lib-item'; li.dataset.id=it.id;
     const row=document.createElement('div'); row.className='dl-row';
     const img=document.createElement('img'); img.className='thumb'; img.alt='';
-    if (it.thumbnail_url){ img.src=it.thumbnail_url; } else { img.style.display='none'; }
-    img.onerror=()=>{ img.style.display='none'; };
+    const thumb=thumbFor(it);
+    img.src = thumb || PLACEHOLDER_THUMB;
+    img.style.display='block';
+    img.onerror=()=>{ img.src=PLACEHOLDER_THUMB; img.onerror=null; };
     const body=document.createElement('div'); body.className='dl-body';
     const titleEl=document.createElement('p'); titleEl.className='title'; titleEl.textContent=it.title||'Video';
     if (it.file_path){ const sub=document.createElement('span'); sub.className='muted small'; sub.textContent=it.file_path; body.appendChild(sub); }
@@ -317,13 +347,18 @@ async function browseAndSetPath(){
   } catch(e){ /* cancelled */ }
 }
 
-document.getElementById('btn-browse-path').addEventListener('click', browseAndSetPath);
+document.getElementById('btn-browse-path').addEventListener('click', async () => {
+  await browseAndSetPath();
+  await saveSettingsNow();
+});
 document.getElementById('btn-change-dl-path').addEventListener('click', async () => {
   await browseAndSetPath();
-  if (settings) { try { await invoke('save_settings',{settings}); flashSaved(); } catch(e){} }
+  await saveSettingsNow();
 });
 
-// ================= SETTINGS (load / save + feedback) =================
+// ================= SETTINGS (auto-save, no Save button) =================
+const CONNECTIONS_MIN = 1, CONNECTIONS_MAX = 64;
+
 async function loadSettings(){
   try { settings = await invoke('get_settings'); } catch(e){ settings=null; }
   if (!settings) return;
@@ -334,30 +369,69 @@ async function loadSettings(){
   document.getElementById('set-speed').value = settings.speed_limit_mbps ?? 0;
   document.getElementById('set-proxy').value = settings.proxy_url || '';
   document.getElementById('set-subfolder').checked = !!settings.create_subfolder;
+  clampConnections();
   refreshPathDisplays();
 }
 
-function flashSaved(){
-  const el=document.getElementById('settings-saved');
-  el.hidden=false; clearTimeout(flashSaved._t); flashSaved._t=setTimeout(()=>el.hidden=true, 2500);
+function clampConnections(){
+  const el=document.getElementById('set-connections');
+  let n=parseInt(el.value,10);
+  if (!Number.isFinite(n)) n=8;
+  n=Math.max(CONNECTIONS_MIN, Math.min(CONNECTIONS_MAX, n));
+  el.value=n;
+  return n;
 }
 
-document.getElementById('btn-save-settings').addEventListener('click', async () => {
-  if (!settings) settings = {};
+function collectSettings(){
+  if (!settings) settings={};
   settings.default_quality=document.getElementById('set-quality').value;
   settings.default_format=document.getElementById('set-format').value;
-  settings.max_concurrent=parseInt(document.getElementById('set-concurrent').value)||3;
-  settings.connections=Math.max(1, Math.min(16, parseInt(document.getElementById('set-connections').value)||8));
-  settings.speed_limit_mbps=parseInt(document.getElementById('set-speed').value)||0;
-  settings.proxy_url=document.getElementById('set-proxy').value||null;
+  settings.max_concurrent=Math.max(1, Math.min(10, parseInt(document.getElementById('set-concurrent').value)||3));
+  settings.connections=clampConnections();
+  settings.speed_limit_mbps=Math.max(0, parseInt(document.getElementById('set-speed').value)||0);
+  const proxy=document.getElementById('set-proxy').value.trim();
+  settings.proxy_url = proxy || null;
   settings.create_subfolder=document.getElementById('set-subfolder').checked;
   settings.theme='dark';
-  settings.filename_pattern='{title}_{quality}';
-  try { await invoke('save_settings',{settings}); refreshPathDisplays(); flashSaved(); }
-  catch (e) { alert('Failed to save: ' + errMsg(e)); }
-});
+  return settings;
+}
 
-document.getElementById('set-subfolder').addEventListener('change', ()=>{ if(settings){ settings.create_subfolder=document.getElementById('set-subfolder').checked; refreshPathDisplays(); }});
+function showToast(msg, isError){
+  const el=document.getElementById('settings-saved');
+  if (!el) return;
+  el.textContent = isError ? msg : 'Saved ✓';
+  el.classList.toggle('error', !!isError);
+  el.hidden=false;
+  clearTimeout(showToast._t);
+  showToast._t=setTimeout(()=>{ el.hidden=true; el.classList.remove('error'); }, isError ? 4000 : 2200);
+}
+function flashSaved(){ showToast('Saved ✓'); }
+
+let saveTimer=null;
+function scheduleSave(){
+  clearTimeout(saveTimer);
+  saveTimer=setTimeout(saveSettingsNow, 350);
+}
+
+async function saveSettingsNow(){
+  clearTimeout(saveTimer);
+  const payload=collectSettings();
+  refreshPathDisplays();
+  try {
+    await invoke('save_settings', { settings: payload });
+    flashSaved();
+  } catch (e) {
+    showToast('Could not save: ' + errMsg(e), true);
+  }
+}
+
+['set-quality','set-format','set-concurrent','set-connections','set-speed','set-proxy'].forEach(id=>{
+  const el=document.getElementById(id);
+  el.addEventListener('change', scheduleSave);
+  el.addEventListener('input', scheduleSave);
+});
+document.getElementById('set-connections').addEventListener('blur', ()=>{ clampConnections(); scheduleSave(); });
+document.getElementById('set-subfolder').addEventListener('change', scheduleSave);
 
 // ================= CHECK FOR UPDATES =================
 const appVersionEl=document.getElementById('app-version');
@@ -376,13 +450,19 @@ function friendlyUpdateError(e){
   return m;
 }
 
-document.getElementById('btn-check-update').addEventListener('click', async () => {
+let updateCheckRunning=false;
+async function runUpdateCheck(auto=false){
+  if (updateCheckRunning) return;
+  updateCheckRunning=true;
   const btn=document.getElementById('btn-check-update');
-  btn.disabled=true;
+  if (btn) btn.disabled=true;
   try {
     setUpdateStatus('Checking for updates…');
     const update=await check({ timeout: 20000 });
-    if (!update){ setUpdateStatus("You're up to date ✓"); return; }
+    if (!update){
+      setUpdateStatus("You're up to date ✓");
+      return;
+    }
     let total=0, downloaded=0;
     setUpdateStatus(`Found v${update.version} — downloading…`);
     await update.downloadAndInstall((ev)=>{
@@ -399,12 +479,22 @@ document.getElementById('btn-check-update').addEventListener('click', async () =
     setTimeout(async()=>{ try { await relaunch(); } catch(_){} }, 800);
   } catch (e) {
     setUpdateStatus('Update failed: ' + friendlyUpdateError(e), true);
-  } finally { btn.disabled=false; }
-});
+  } finally {
+    updateCheckRunning=false;
+    if (btn) btn.disabled=false;
+  }
+}
+
+document.getElementById('btn-check-update').addEventListener('click', ()=>runUpdateCheck(false));
 
 // Enter key submits URL
 urlInput.addEventListener('keydown', e => { if (e.key==='Enter' && !e.shiftKey){ e.preventDefault(); btnAnalyze.click(); }});
 
 // ================= INIT =================
-loadSettings();
-renderLibrary();
+(async () => {
+  await loadSettings();
+  renderLibrary();
+  // Check for updates automatically on every launch (slightly delayed so the
+  // window appears first). Manual checks keep the button.
+  setTimeout(()=>{ runUpdateCheck(true); }, 2000);
+})();

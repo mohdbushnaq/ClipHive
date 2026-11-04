@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-04
+
+### Fixed
+- **“[Errno 22] Invalid argument” on large videos.** yt-dlp could not open its output file when a title produced an over-long or invalid Windows filename. Downloads now use bounded, Windows-safe names (`title` capped at 100 characters plus the video id), `--windows-filenames` and `--trim-filenames`, and automatically retry with an id-only filename if the first attempt is still rejected.
+- If the bundled aria2c downloader fails, the download is retried automatically with yt-dlp's native downloader instead of failing outright.
+- Download errors are now explained instead of dumped raw: invalid filename, not enough free disk space while merging a large 4K/HDR file, HTTP 403, private/age-restricted videos, and aria2c failures each get a plain-language message.
+- **Settings → Save no longer fails.** The Rust command expected an argument named `s` while the frontend sent `settings`, producing “command save_settings missing required key s”. The argument name now matches.
+- Removed the Save Settings button. Every settings change is saved automatically (debounced), with a small “Saved ✓” toast in the top-right corner. Errors appear in the same toast.
+
+### Added
+- **Connections per Download is now 1–64** (was 1–16), for much faster multi-connection downloads on high-bandwidth links.
+- **Thumbnails in the Library.** Completed downloads now display their thumbnail. Items without a stored thumbnail get a YouTube thumbnail derived from the URL, or a neutral placeholder.
+- Batch and page-scan downloads now fetch their title and thumbnail from the video metadata, so their cards and Library entries show the same information as single-video downloads.
+- **Automatic update check on launch.** ClipHive checks for a new version about two seconds after the window opens; if one is found it downloads, verifies and installs it. The manual “Check for updates” button remains available.
+
 ## [0.2.0] - 2026-11-04
 
 ### Added

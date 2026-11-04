@@ -15,7 +15,7 @@ Paste **any** URL — an article, course page, blog post, social profile. ClipHi
 - **Quality selection** — Auto (best available), 4K, 1080p, 720p, 480p, 360p
 - **Format options** — MP4, WebM, or audio-only (MP3/M4A)
 - **Real-time progress** — speed, ETA, and percentage for every download
-- **Multi-connection downloads** — files are split across up to 16 parallel connections (bundled aria2c) to make the most of your available bandwidth; fragmented streams download several fragments at once
+- **Multi-connection downloads** — files are split across up to 64 parallel connections (bundled aria2c) to make the most of your available bandwidth; fragmented streams download several fragments at once
 - **Pause / Resume / Cancel** — full control over active downloads
 - **Concurrent downloads** — run multiple at once with configurable limits
 
@@ -24,17 +24,18 @@ Paste multiple video URLs (one per line), validate them all at once, see which a
 
 ### ⚙️ Settings
 - Default quality and format preferences
-- Connections per download (1–16, default 8) for multi-connection speed
+- Connections per download (1–64, default 8) for multi-connection speed
 - Speed limit (MB/s) to preserve bandwidth
 - Proxy support for restricted networks
 - Custom filename patterns (`{title}_{quality}`, etc.)
 - Dark theme (built-in)
+- Settings save automatically — no Save button
 
 ### 📁 Library
-Browse all your completed downloads. Search by title, open the file's folder in Explorer, or remove entries from history.
+Browse all your completed downloads with thumbnails. Search by title, open the file's folder in Explorer, or remove entries from history.
 
 ### 🔄 Auto-Updates
-Check for new versions right inside the app (**Settings → Check for updates**). When an update is available, ClipHive downloads it, verifies its signature, installs it over your existing version, and relaunches — no manual uninstall/reinstall needed. Current version is shown at the top of Settings.
+ClipHive checks for a new version automatically every time it opens. When one is available, it downloads it, verifies its signature, installs it over your existing version, and relaunches — no manual uninstall/reinstall needed. You can also check manually via **Settings → Check for updates**. Current version is shown at the top of Settings.
 
 ---
 

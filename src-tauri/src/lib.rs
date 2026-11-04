@@ -204,7 +204,10 @@ async fn analyze_url(url: String) -> Result<VideoInfo, String> {
     // Add ffmpeg dir to PATH for this process
     let mut cmd = Command::new(&ytdlp);
     #[cfg(windows)]
-    { use std::os::windows::process::CommandExt; const CREATE_NO_WINDOW: u32 = 0x08000000; cmd.creation_flags(CREATE_NO_WINDOW); }
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
     if let Some(dir) = ffmpeg_dir() {
         let path_env = format!("{};{}", dir.display(), std::env::var("PATH").unwrap_or_default());
         cmd.env("PATH", path_env);
@@ -236,20 +239,71 @@ async fn analyze_url(url: String) -> Result<VideoInfo, String> {
     })
 }
 
-/// Start a video download via yt-dlp subprocess
-#[tauri::command]
-async fn start_download(
-    app_handle: tauri::AppHandle,
-    state: tauri::State<'_, AppState>,
-    url: String,
-    quality: String,
-    format: String,
-    title: Option<String>,
-    thumbnail_url: Option<String>,
-) -> Result<String, String> {
-    let id = uuid::Uuid::new_v4().to_string();
+/// Build a yt-dlp command with the bundled tools available on PATH and no console window.
+fn ytdlp_command() -> Command {
+    let ytdlp = resource_path("yt-dlp.exe");
+    let mut cmd = Command::new(&ytdlp);
 
-    // Build yt-dlp args
+    #[cfg(windows)]
+    {
+        const CREATE_NO_WINDOW: u32 = 0x08000000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+
+    let mut tool_dirs: Vec<String> = Vec::new();
+    if let Some(dir) = ffmpeg_dir() {
+        tool_dirs.push(dir.display().to_string());
+    }
+    if let Some(p) = find_resource("aria2c.exe") {
+        if let Some(dir) = p.parent() {
+            tool_dirs.push(dir.display().to_string());
+        }
+    }
+    if !tool_dirs.is_empty() {
+        let path_env = format!(
+            "{};{}",
+            tool_dirs.join(";"),
+            std::env::var("PATH").unwrap_or_default()
+        );
+        cmd.env("PATH", path_env);
+    }
+    cmd
+}
+
+/// Read a video's title and thumbnail without downloading the media.
+/// Used to fill in cards for scans/batch jobs that only have a bare URL.
+async fn probe_media(url: &str) -> (Option<String>, Option<String>) {
+    let mut cmd = ytdlp_command();
+    let output = match tokio::time::timeout(
+        std::time::Duration::from_secs(30),
+        cmd.args(["--dump-json", "--no-playlist", url]).output(),
+    )
+    .await
+    {
+        Ok(Ok(o)) => o,
+        _ => return (None, None),
+    };
+    if !output.status.success() {
+        return (None, None);
+    }
+    let data: serde_json::Value = match serde_json::from_slice(&output.stdout) {
+        Ok(v) => v,
+        Err(_) => return (None, None),
+    };
+    let title = data["title"].as_str().map(String::from);
+    let thumb = data["thumbnail"].as_str().map(String::from);
+    (title, thumb)
+}
+
+/// Build the yt-dlp argument list for one download attempt.
+fn build_download_args(
+    url: &str,
+    quality: &str,
+    format: &str,
+    conns: usize,
+    use_aria2c: bool,
+    template: &str,
+) -> Vec<String> {
     let mut args: Vec<String> = vec![];
 
     if format.starts_with("audio_") {
@@ -271,18 +325,21 @@ async fn start_download(
         args.push(if format == "webm" { "webm" } else { "mp4" }.into());
     }
 
-    // --- Multi-connection downloading ---
-    let settings = settings::load().unwrap_or_default();
-    let conns = settings.connections.clamp(1, 16);
-    let aria2c = find_resource("aria2c.exe");
+    // Filenames: strip characters Windows rejects and cap their length.
+    // This is what stops "[Errno 22] Invalid argument" on long/complex titles.
+    args.push("--windows-filenames".into());
+    args.push("--trim-filenames".into());
+    args.push("120".into());
+    args.push("--no-mtime".into());
+    args.push("--no-playlist".into());
+    args.push("--newline".into());
 
     // Fragmented streams (DASH/HLS): fetch several fragments at once.
     args.push("--concurrent-fragments".into());
     args.push(conns.to_string());
 
-    // Regular files: aria2c splits the file into pieces and fetches them
-    // over parallel connections instead of one serial stream.
-    if aria2c.is_some() {
+    // Regular files: aria2c splits the file and fetches pieces in parallel.
+    if use_aria2c && find_resource("aria2c.exe").is_some() {
         args.push("--downloader".into());
         args.push("aria2c".into());
         args.push("--downloader-args".into());
@@ -292,16 +349,157 @@ async fn start_download(
         ));
     }
 
-    // Output to the configured download folder (created if missing)
-    let output_dir = resolve_output_dir();
     args.push("-o".into());
-    args.push(output_dir.join("%(title)s.%(ext)s").to_string_lossy().to_string());
-    args.push("--no-playlist".into());
-    // Emit one progress line at a time (newline-terminated) instead of carriage-return updates.
-    args.push("--newline".into());
-    args.push(url.clone());
+    args.push(template.to_string());
+    args.push(url.into());
+    args
+}
 
-    // Add to state as downloading (with title/thumbnail for the UI)
+/// Turn a raw yt-dlp error into something a user can act on.
+fn friendly_download_error(raw: &str) -> String {
+    let low = raw.to_lowercase();
+    if low.contains("errno 22") || low.contains("unable to open for writing") {
+        return "Couldn't write the file — the name or save folder is invalid. Try a different save folder.".into();
+    }
+    if low.contains("conversion failed") || low.contains("no space left") || low.contains("not enough space") {
+        return "Not enough free disk space to finish this download. A 4K/HDR video needs roughly twice its size free while it is merged.".into();
+    }
+    if low.contains("http error 403") || low.contains("forbidden") {
+        return "The video server refused the download (HTTP 403). Try again or pick a lower quality.".into();
+    }
+    if low.contains("unsupported url") || low.contains("not a valid url") {
+        return "That URL isn't a supported video page.".into();
+    }
+    if low.contains("private") || low.contains("sign in") || low.contains("confirm your age") {
+        return "This video is private, age-restricted, or requires sign-in.".into();
+    }
+    if low.contains("aria2c exited") {
+        return "The multi-connection downloader failed. ClipHive will retry with the standard downloader.".into();
+    }
+    raw.to_string()
+}
+
+/// Run yt-dlp for one attempt, streaming progress to the UI.
+async fn run_ytdlp(app: &tauri::AppHandle, id: &str, args: &[String]) -> (bool, String) {
+    let mut cmd = ytdlp_command();
+    let mut child = match cmd
+        .args(args)
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+    {
+        Ok(c) => c,
+        Err(e) => return (false, format!("Failed to run yt-dlp: {}", e)),
+    };
+
+    let _ = app.emit(
+        "download-event",
+        serde_json::json!({ "id": id, "status": "downloading", "progress_pct": 0.0 }),
+    );
+
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    use std::time::{Duration, Instant};
+
+    let stdout = child.stdout.take();
+    let stderr = child.stderr.take();
+
+    let progress_handle = {
+        let app = app.clone();
+        let id_line = id.to_string();
+        tokio::spawn(async move {
+            if let Some(out) = stdout {
+                let mut lines = BufReader::new(out).lines();
+                let mut last_emit = Instant::now() - Duration::from_secs(1);
+                while let Ok(Some(line)) = lines.next_line().await {
+                    let is_progress = (line.contains("[download]") && line.contains('%'))
+                        || (line.contains("[#") && line.contains('%'));
+                    if !is_progress {
+                        continue;
+                    }
+                    // Keep the UI readable: at most ~8 updates per second.
+                    if last_emit.elapsed() < Duration::from_millis(120) {
+                        continue;
+                    }
+                    last_emit = Instant::now();
+                    let _ = app.emit(
+                        "download-event",
+                        serde_json::json!({
+                            "id": id_line,
+                            "status": "downloading",
+                            "progress_pct": extract_pct(&line),
+                            "speed_bps": extract_speed(&line),
+                            "eta_sec": extract_eta(&line),
+                        }),
+                    );
+                }
+            }
+        })
+    };
+
+    let stderr_handle = {
+        tokio::spawn(async move {
+            let mut err_text = String::new();
+            if let Some(err) = stderr {
+                let mut lines = BufReader::new(err).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if err_text.len() < 12000 {
+                        err_text.push_str(&line);
+                        err_text.push('\n');
+                    }
+                }
+            }
+            err_text
+        })
+    };
+
+    let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
+    let _ = progress_handle.await;
+    let err_text = stderr_handle.await.unwrap_or_default();
+
+    let error_line = err_text
+        .lines()
+        .rev()
+        .find(|l| l.to_lowercase().contains("error"))
+        .or_else(|| err_text.lines().rev().find(|l| !l.trim().is_empty()))
+        .unwrap_or("Download failed")
+        .trim()
+        .to_string();
+
+    (ok, error_line)
+}
+
+/// Start a video download via yt-dlp.
+#[tauri::command]
+async fn start_download(
+    app_handle: tauri::AppHandle,
+    state: tauri::State<'_, AppState>,
+    url: String,
+    quality: String,
+    format: String,
+    title: Option<String>,
+    thumbnail_url: Option<String>,
+) -> Result<String, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+
+    let settings = settings::load().unwrap_or_default();
+    let conns = settings.connections.clamp(1, 64);
+    let aria2c_available = find_resource("aria2c.exe").is_some();
+
+    let output_dir = resolve_output_dir();
+    let dir_str = output_dir.to_string_lossy().to_string();
+
+    // Short, Windows-safe names: bounded title + video id. A fallback that uses
+    // only the id is used when the first attempt still hits a filename error.
+    let template = output_dir
+        .join("%(title).100s [%(id)s].%(ext)s")
+        .to_string_lossy()
+        .to_string();
+    let short_template = output_dir
+        .join("[%(id)s].%(ext)s")
+        .to_string_lossy()
+        .to_string();
+
+    // Add to state as downloading (with title/thumbnail for the UI).
     {
         let mut downloads = state.downloads.lock().unwrap();
         downloads.insert(0, DownloadItem {
@@ -321,128 +519,120 @@ async fn start_download(
         });
     }
 
-    // Spawn yt-dlp in a background task (hidden window on Windows)
     let id_clone = id.clone();
     let app_clone = app_handle.clone();
+    let url_clone = url.clone();
+    let quality_clone = quality.clone();
+    let format_clone = format.clone();
+    let base_template = template.clone();
+    let fallback_template = short_template.clone();
     let output_dir_clone = output_dir.clone();
 
     tokio::spawn(async move {
-        let ytdlp = resource_path("yt-dlp.exe");
-        let mut cmd = Command::new(&ytdlp);
-        let mut tool_dirs: Vec<String> = Vec::new();
-        if let Some(dir) = ffmpeg_dir() { tool_dirs.push(dir.display().to_string()); }
-        if let Some(dir) = aria2c.as_ref().and_then(|p| p.parent()) { tool_dirs.push(dir.display().to_string()); }
-        if !tool_dirs.is_empty() {
-            let path_env = format!("{};{}", tool_dirs.join(";"), std::env::var("PATH").unwrap_or_default());
-            cmd.env("PATH", path_env);
-        }
-        #[cfg(windows)]
-        { use std::os::windows::process::CommandExt; const CREATE_NO_WINDOW: u32 = 0x08000000; cmd.creation_flags(CREATE_NO_WINDOW); }
-
-        let mut child = match cmd
-            .args(&args)
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped())
-            .spawn()
-        {
-            Ok(c) => c,
-            Err(e) => {
-                let _ = app_clone.emit("download-event", serde_json::json!({
-                    "id": id_clone, "status": "failed", "error": e.to_string()
-                }));
-                return;
+        // Fill in metadata the caller did not provide (batch/scan downloads).
+        let mut thumb = thumbnail_url.clone();
+        let mut display_title = title.clone().filter(|t| !t.trim().is_empty());
+        if thumb.is_none() || display_title.is_none() {
+            let (probe_title, probe_thumb) = probe_media(&url_clone).await;
+            if display_title.is_none() {
+                display_title = probe_title;
             }
-        };
-
-        // Tell the UI a download has started before the first progress line arrives.
-        let _ = app_clone.emit("download-event", serde_json::json!({
-            "id": id_clone, "status": "downloading", "progress_pct": 0.0
-        }));
-
-        use tokio::io::{AsyncBufReadExt, BufReader};
-        use std::time::{Duration, Instant};
-
-        let stdout = child.stdout.take();
-        let stderr = child.stderr.take();
-
-        // yt-dlp writes download progress to stdout, not stderr. Read both pipes
-        // concurrently so neither can fill up and stall the process.
-        let progress_handle = {
-            let app = app_clone.clone();
-            let id_line = id_clone.clone();
-            tokio::spawn(async move {
-                if let Some(out) = stdout {
-                    let mut lines = BufReader::new(out).lines();
-                    let mut last_emit = Instant::now() - Duration::from_secs(1);
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        // yt-dlp's own progress lines and aria2c's progress summaries
-                        // both carry a percentage; everything else is noise for the UI.
-                        let is_progress = (line.contains("[download]") && line.contains('%'))
-                            || (line.contains("[#") && line.contains('%'));
-                        if !is_progress { continue; }
-                        // Keep the UI readable: at most ~8 updates per second.
-                        if last_emit.elapsed() < Duration::from_millis(120) { continue; }
-                        last_emit = Instant::now();
-                        let _ = app.emit("download-event", serde_json::json!({
-                            "id": id_line,
-                            "status": "downloading",
-                            "progress_pct": extract_pct(&line),
-                            "speed_bps": extract_speed(&line),
-                            "eta_sec": extract_eta(&line),
-                        }));
+            if thumb.is_none() {
+                thumb = probe_thumb;
+            }
+        }
+        if display_title.is_some() || thumb.is_some() {
+            {
+                let state = app_clone.state::<AppState>();
+                let mut dl = state.downloads.lock().unwrap();
+                if let Some(item) = dl.iter_mut().find(|d| d.id == id_clone) {
+                    if let Some(t) = display_title.as_ref() {
+                        item.title = t.clone();
+                    }
+                    if thumb.is_some() {
+                        item.thumbnail_url = thumb.clone();
                     }
                 }
-            })
-        };
+            }
+            let _ = app_clone.emit("download-event", serde_json::json!({
+                "id": id_clone,
+                "status": "downloading",
+                "title": display_title,
+                "thumbnail_url": thumb,
+            }));
+        }
 
-        let stderr_handle = {
-            tokio::spawn(async move {
-                let mut err_text = String::new();
-                if let Some(err) = stderr {
-                    let mut lines = BufReader::new(err).lines();
-                    while let Ok(Some(line)) = lines.next_line().await {
-                        if err_text.len() < 8000 {
-                            err_text.push_str(&line);
-                            err_text.push('\n');
-                        }
-                    }
-                }
-                err_text
-            })
-        };
+        // Attempt 1: aria2c + descriptive filename. If the filename is rejected
+        // (Errno 22), retry with an id-only name. If aria2c itself fails, retry
+        // with yt-dlp's native downloader.
+        let args = build_download_args(
+            &url_clone, &quality_clone, &format_clone, conns, aria2c_available, &base_template,
+        );
+        let (mut ok, mut error_line) = run_ytdlp(&app_clone, &id_clone, &args).await;
 
-        let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
-        let _ = progress_handle.await;
-        let err_text = stderr_handle.await.unwrap_or_default();
-        let error_line = err_text
-            .lines()
-            .rev()
-            .find(|l| l.to_lowercase().contains("error"))
-            .or_else(|| err_text.lines().rev().find(|l| !l.trim().is_empty()))
-            .unwrap_or("Download failed")
-            .trim()
-            .to_string();
+        if !ok {
+            let low = error_line.to_lowercase();
+            let retry_args = if low.contains("errno 22") || low.contains("unable to open for writing") {
+                let _ = app_clone.emit("download-event", serde_json::json!({
+                    "id": id_clone, "status": "downloading", "note": "Retrying with a shorter file name…"
+                }));
+                build_download_args(
+                    &url_clone, &quality_clone, &format_clone, conns, aria2c_available, &fallback_template,
+                )
+            } else if aria2c_available
+                && !low.contains("conversion failed")
+                && !low.contains("no space left")
+            {
+                let _ = app_clone.emit("download-event", serde_json::json!({
+                    "id": id_clone, "status": "downloading", "note": "Retrying without aria2c…"
+                }));
+                build_download_args(
+                    &url_clone, &quality_clone, &format_clone, conns, false, &base_template,
+                )
+            } else {
+                Vec::new()
+            };
+
+            if !retry_args.is_empty() {
+                let (retry_ok, retry_err) = run_ytdlp(&app_clone, &id_clone, &retry_args).await;
+                ok = retry_ok;
+                error_line = retry_err;
+            }
+        }
+
         let file_path = if ok { latest_media_file(&output_dir_clone) } else { None };
-        let dir_str = output_dir_clone.to_string_lossy().to_string();
+        let friendly_error = friendly_download_error(&error_line);
 
-        // Update shared state with the final result, then persist completed items
-        let state = app_clone.state::<AppState>();
+        // Update shared state with the final result, then persist completed items.
         {
+            let state = app_clone.state::<AppState>();
             let mut dl = state.downloads.lock().unwrap();
             if let Some(item) = dl.iter_mut().find(|d| d.id == id_clone) {
                 item.status = if ok { "complete".into() } else { "failed".into() };
-                item.error = if ok { None } else { Some(error_line.clone()) };
+                item.error = if ok { None } else { Some(friendly_error.clone()) };
                 if ok {
                     item.progress_pct = 100.0;
                     item.file_path = file_path.clone();
-                    item.completed_at = Some(std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis() as i64).unwrap_or(0));
+                    item.completed_at = Some(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .map(|d| d.as_millis() as i64)
+                            .unwrap_or(0),
+                    );
                 }
             }
         }
 
         if ok {
-            let completed: Vec<DownloadItem> = state.downloads.lock().unwrap()
-                .iter().filter(|d| d.status == "complete").cloned().collect();
+            let completed: Vec<DownloadItem> = app_clone
+                .state::<AppState>()
+                .downloads
+                .lock()
+                .unwrap()
+                .iter()
+                .filter(|d| d.status == "complete")
+                .cloned()
+                .collect();
             persist_library(&completed);
         }
 
@@ -452,7 +642,7 @@ async fn start_download(
             "progress_pct": if ok { serde_json::json!(100.0) } else { serde_json::Value::Null },
             "file_path": file_path,
             "dir": dir_str,
-            "error": if ok { serde_json::Value::Null } else { serde_json::json!(error_line) }
+            "error": if ok { serde_json::Value::Null } else { serde_json::json!(friendly_error) }
         }));
     });
 
@@ -587,10 +777,10 @@ fn get_settings() -> Result<settings::AppSettings, String> {
     settings::load()
 }
 
-/// Save app settings
+/// Save app settings (argument name matches the `{ settings }` payload from the frontend)
 #[tauri::command]
-fn save_settings(s: settings::AppSettings) -> Result<(), String> {
-    settings::save(&s)
+fn save_settings(settings: settings::AppSettings) -> Result<(), String> {
+    settings::save(&settings)
 }
 
 // --- Helpers ---
