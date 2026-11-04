@@ -353,18 +353,42 @@ const appVersionEl=document.getElementById('app-version');
 invoke('get_version').then(v=>{ if(appVersionEl) appVersionEl.textContent=v; }).catch(()=>{});
 
 function setUpdateStatus(msg,isError){ const el=document.getElementById('update-status'); if(!el)return; el.textContent=msg; el.hidden=false; el.classList.toggle('error',!!isError); }
+
+function friendlyUpdateError(e){
+  const m=errMsg(e);
+  if (/404|not[\s-]*found|manifest|release json/i.test(m))
+    return "the update server has no manifest for this release (update-manifest.json is missing).";
+  if (/network|fetch|connect|dns|timeout|timed out|econn|socket|offline|status code/i.test(m))
+    return "couldn't reach the update server. Check your internet connection and try again.";
+  if (/signature|verify|pubkey|minisign/i.test(m))
+    return "the update failed its signature check, so it was not installed.";
+  return m;
+}
+
 document.getElementById('btn-check-update').addEventListener('click', async () => {
   const btn=document.getElementById('btn-check-update');
+  btn.disabled=true;
   try {
-    btn.disabled=true; setUpdateStatus('Checking for updates…');
-    const update=await check();
+    setUpdateStatus('Checking for updates…');
+    const update=await check({ timeout: 20000 });
     if (!update){ setUpdateStatus("You're up to date ✓"); return; }
-    setUpdateStatus(`Found v${update.version} — downloading & installing…`);
-    await update.downloadAndInstall(()=>{});
-    setUpdateStatus('Installed! Relaunching ClipHive…');
+    let total=0, downloaded=0;
+    setUpdateStatus(`Found v${update.version} — downloading…`);
+    await update.downloadAndInstall((ev)=>{
+      if (ev.event==='Started') { total=ev.data.contentLength||0; }
+      else if (ev.event==='Progress') {
+        downloaded += ev.data.chunkLength||0;
+        if (total) setUpdateStatus(`Downloading v${update.version}… ${Math.min(100, Math.round(downloaded/total*100))}%`);
+      } else if (ev.event==='Finished') {
+        setUpdateStatus('Download complete — installing…');
+      }
+    }, { timeout: 600000 });
+    // On Windows the installer takes over and closes the app; on other platforms relaunch.
+    setUpdateStatus('Installed. ClipHive is restarting…');
     setTimeout(async()=>{ try { await relaunch(); } catch(_){} }, 800);
-  } catch (e) { setUpdateStatus('Update check failed: ' + errMsg(e), true); }
-  finally { btn.disabled=false; }
+  } catch (e) {
+    setUpdateStatus('Update failed: ' + friendlyUpdateError(e), true);
+  } finally { btn.disabled=false; }
 });
 
 // Enter key submits URL

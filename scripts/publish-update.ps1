@@ -52,7 +52,7 @@ $signature = (Get-Content $sigPath -Raw).Trim()
 
 # --- 3) Build update-manifest.json -------------------------------------------
 $pubDate    = (Get-Date).ToUniversalTime().ToString("yyyy-MM-ddTHH:mm:ssZ")
-$updateUrl  = "$repoUrl/releases/latest/download/$($installer.Name)"
+$updateUrl  = "$repoUrl/releases/download/v$Version/$($installer.Name)"
 $manifest   = [ordered]@{
     version   = $Version
     notes     = $Notes

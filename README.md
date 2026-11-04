@@ -62,7 +62,7 @@ Check for new versions right inside the app (**Settings → Check for updates**)
 
 ### Option A: Installer (recommended)
 
-1. Download `ClipHive_0.1.0_x64-setup.exe` from [Releases](../../releases)
+1. Download the latest `ClipHive_X.Y.Z_x64-setup.exe` from [Releases](../../releases)
 2. Double-click to install (per-user, no admin required)
 3. Launch ClipHive from your Start Menu or Desktop shortcut
 
@@ -138,7 +138,7 @@ npx tauri build
 
 The release installer will be at:
 ```
-src-tauri/target/release/bundle/nsis/ClipHive_0.1.0_x64-setup.exe
+src-tauri/target/release/bundle/nsis/ClipHive_X.Y.Z_x64-setup.exe
 ```
 
 ### Releasing an update (for maintainers)
