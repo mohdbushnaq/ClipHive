@@ -8,6 +8,8 @@ pub struct AppSettings {
     pub default_quality: String,
     pub default_format: String, // "mp4" | "webm" | "audio_mp3" | "audio_m4a"
     pub max_concurrent: usize,
+    /// Parallel HTTP connections used per file (multi-connection download).
+    pub connections: usize,
     pub speed_limit_mbps: u32,  // 0 = unlimited
     pub proxy_url: Option<String>,
     pub theme: String,          // "dark" | "light" | "system"
@@ -24,6 +26,7 @@ impl Default for AppSettings {
             default_quality: "auto".into(),
             default_format: "mp4".into(),
             max_concurrent: 3,
+            connections: 8,
             speed_limit_mbps: 0,
             proxy_url: None,
             theme: "dark".into(),

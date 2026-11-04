@@ -4,6 +4,7 @@
 #   - yt-dlp.exe  (video extraction engine)
 #   - ffmpeg.exe  (codec / merge support)
 #   - ffprobe.exe (format detection)
+#   - aria2c.exe  (multi-connection downloader)
 #
 # They are stored in src-tauri/resources/ and git-ignored on purpose so the
 # repository stays small. Run this once before building:
@@ -32,17 +33,17 @@ function Download([string]$url, [string]$out) {
 # --- 1) yt-dlp (single-file Windows executable from official releases) -------
 $yt = Join-Path $resDir "yt-dlp.exe"
 if (-not (Test-Path $yt)) {
-    Write-Host "[1/2] Downloading yt-dlp..." -ForegroundColor Yellow
+    Write-Host "[1/3] Downloading yt-dlp..." -ForegroundColor Yellow
     Download "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe" $yt
 } else {
-    Write-Host "[1/2] yt-dlp.exe already present, skipping." -ForegroundColor Green
+    Write-Host "[1/3] yt-dlp.exe already present, skipping." -ForegroundColor Green
 }
 
 # --- 2) ffmpeg + ffprobe (from the gyan.dev essentials build) ----------------
 $ffmpeg  = Join-Path $resDir "ffmpeg.exe"
 $ffprobe = Join-Path $resDir "ffprobe.exe"
 if (-not ((Test-Path $ffmpeg) -and (Test-Path $ffprobe))) {
-    Write-Host "[2/2] Downloading ffmpeg + ffprobe..." -ForegroundColor Yellow
+    Write-Host "[2/3] Downloading ffmpeg + ffprobe..." -ForegroundColor Yellow
     $zip = Join-Path $tempDir "ffmpeg.zip"
     Download "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip" $zip
 
@@ -55,7 +56,24 @@ if (-not ((Test-Path $ffmpeg) -and (Test-Path $ffprobe))) {
     Copy-Item (Join-Path $found.DirectoryName "ffmpeg.exe")  $ffmpeg  -Force
     Copy-Item (Join-Path $found.DirectoryName "ffprobe.exe") $ffprobe -Force
 } else {
-    Write-Host "[2/2] ffmpeg + ffprobe already present, skipping." -ForegroundColor Green
+    Write-Host "[2/3] ffmpeg + ffprobe already present, skipping." -ForegroundColor Green
+}
+
+# --- 3) aria2c (multi-connection downloader, from official releases) ---------
+$aria = Join-Path $resDir "aria2c.exe"
+if (-not (Test-Path $aria)) {
+    Write-Host "[3/3] Downloading aria2c..." -ForegroundColor Yellow
+    $zip = Join-Path $tempDir "aria2.zip"
+    Download "https://github.com/aria2/aria2/releases/download/release-1.37.0/aria2-1.37.0-win-64bit-build1.zip" $zip
+
+    $unzip = Join-Path $tempDir "aria2"
+    Expand-Archive -Path $zip -DestinationPath $unzip -Force
+
+    $found = Get-ChildItem -Path $unzip -Recurse -Filter "aria2c.exe" | Select-Object -First 1
+    if ($null -eq $found) { throw "aria2c.exe was not found inside the downloaded archive." }
+    Copy-Item $found.FullName $aria -Force
+} else {
+    Write-Host "[3/3] aria2c.exe already present, skipping." -ForegroundColor Green
 }
 
 # --- Cleanup ------------------------------------------------------------------

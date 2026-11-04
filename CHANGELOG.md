@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-11-04
+
+### Added
+- **Multi-connection downloads.** Regular files are now split into pieces and fetched over several parallel HTTP connections with the bundled aria2c, instead of one serial stream, so downloads can use the full available bandwidth.
+- Fragmented streams (DASH/HLS) now download several fragments at once (`--concurrent-fragments`).
+- New **Settings → Connections per Download (1–16)** option (default 8) controls how many parallel connections are used.
+- aria2c is bundled with the app and fetched by `scripts/fetch-resources.ps1`; if it is missing, ClipHive falls back to yt-dlp's native downloader.
+- Progress parsing understands aria2c's progress summary as well as yt-dlp's own output, so the percentage, speed and ETA stay live during multi-connection downloads.
+
 ## [0.1.2] - 2026-11-04
 
 ### Fixed

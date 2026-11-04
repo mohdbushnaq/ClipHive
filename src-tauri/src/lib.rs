@@ -34,6 +34,18 @@ fn resource_path(name: &str) -> PathBuf {
     PathBuf::from(name)
 }
 
+/// Find a bundled resource next to the executable (or in its resources/ folder).
+fn find_resource(name: &str) -> Option<PathBuf> {
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|d| d.to_path_buf()))?;
+    let direct = exe_dir.join(name);
+    if direct.exists() { return Some(direct); }
+    let res = exe_dir.join("resources").join(name);
+    if res.exists() { return Some(res); }
+    None
+}
+
 /// Get the directory containing ffmpeg (for setting PATH env var)
 fn ffmpeg_dir() -> Option<PathBuf> {
     let exe_dir = std::env::current_exe()
@@ -259,6 +271,27 @@ async fn start_download(
         args.push(if format == "webm" { "webm" } else { "mp4" }.into());
     }
 
+    // --- Multi-connection downloading ---
+    let settings = settings::load().unwrap_or_default();
+    let conns = settings.connections.clamp(1, 16);
+    let aria2c = find_resource("aria2c.exe");
+
+    // Fragmented streams (DASH/HLS): fetch several fragments at once.
+    args.push("--concurrent-fragments".into());
+    args.push(conns.to_string());
+
+    // Regular files: aria2c splits the file into pieces and fetches them
+    // over parallel connections instead of one serial stream.
+    if aria2c.is_some() {
+        args.push("--downloader".into());
+        args.push("aria2c".into());
+        args.push("--downloader-args".into());
+        args.push(format!(
+            "aria2c:-x{} -s{} -k1M --summary-interval=1 --console-log-level=warn --file-allocation=none",
+            conns, conns
+        ));
+    }
+
     // Output to the configured download folder (created if missing)
     let output_dir = resolve_output_dir();
     args.push("-o".into());
@@ -296,8 +329,11 @@ async fn start_download(
     tokio::spawn(async move {
         let ytdlp = resource_path("yt-dlp.exe");
         let mut cmd = Command::new(&ytdlp);
-        if let Some(dir) = ffmpeg_dir() {
-            let path_env = format!("{};{}", dir.display(), std::env::var("PATH").unwrap_or_default());
+        let mut tool_dirs: Vec<String> = Vec::new();
+        if let Some(dir) = ffmpeg_dir() { tool_dirs.push(dir.display().to_string()); }
+        if let Some(dir) = aria2c.as_ref().and_then(|p| p.parent()) { tool_dirs.push(dir.display().to_string()); }
+        if !tool_dirs.is_empty() {
+            let path_env = format!("{};{}", tool_dirs.join(";"), std::env::var("PATH").unwrap_or_default());
             cmd.env("PATH", path_env);
         }
         #[cfg(windows)]
@@ -339,7 +375,11 @@ async fn start_download(
                     let mut lines = BufReader::new(out).lines();
                     let mut last_emit = Instant::now() - Duration::from_secs(1);
                     while let Ok(Some(line)) = lines.next_line().await {
-                        if !line.contains("[download]") || !line.contains('%') { continue; }
+                        // yt-dlp's own progress lines and aria2c's progress summaries
+                        // both carry a percentage; everything else is noise for the UI.
+                        let is_progress = (line.contains("[download]") && line.contains('%'))
+                            || (line.contains("[#") && line.contains('%'));
+                        if !is_progress { continue; }
                         // Keep the UI readable: at most ~8 updates per second.
                         if last_emit.elapsed() < Duration::from_millis(120) { continue; }
                         last_emit = Instant::now();
@@ -605,24 +645,49 @@ fn extract_pct(line: &str) -> f64 {
 }
 
 fn extract_speed(line: &str) -> Option<u64> {
-    let re = regex::Regex::new(r"at\s+([\d.]+)\s*(B|KiB|MiB|GiB)/s").unwrap();
-    if let Some(caps) = re.captures(line) {
-        let val: f64 = caps.get(1)?.as_str().parse().ok()?;
-        let mult: u64 = match caps.get(2)?.as_str() {
-            "B" => 1, "KiB" => 1024, "MiB" => 1024*1024, _ => 1024*1024*1024
-        };
-        Some((val * mult as f64) as u64)
-    } else { None }
+    // yt-dlp: "at 2.50MiB/s"
+    let yt = regex::Regex::new(r"at\s+([\d.]+)\s*(B|KiB|MiB|GiB)/s").unwrap();
+    if let Some(caps) = yt.captures(line) {
+        return bps(caps.get(1)?.as_str(), caps.get(2)?.as_str());
+    }
+    // aria2c: "DL:2.7MiB" (per second)
+    let aria = regex::Regex::new(r"DL:([\d.]+)(B|KiB|MiB|GiB)").unwrap();
+    if let Some(caps) = aria.captures(line) {
+        return bps(caps.get(1)?.as_str(), caps.get(2)?.as_str());
+    }
+    None
+}
+
+fn bps(val: &str, unit: &str) -> Option<u64> {
+    let v: f64 = val.parse().ok()?;
+    let mult: u64 = match unit {
+        "B" => 1,
+        "KiB" => 1024,
+        "MiB" => 1024 * 1024,
+        "GiB" => 1024 * 1024 * 1024,
+        _ => return None,
+    };
+    Some((v * mult as f64) as u64)
 }
 
 fn extract_eta(line: &str) -> Option<u64> {
     // yt-dlp prints ETA as mm:ss, or h:mm:ss for longer downloads.
-    let re = regex::Regex::new(r"ETA\s+(?:(\d+):)?(\d+):(\d+)").unwrap();
-    let caps = re.captures(line)?;
-    let h: u64 = caps.get(1).map(|m| m.as_str().parse().unwrap_or(0)).unwrap_or(0);
-    let min: u64 = caps.get(2)?.as_str().parse().ok()?;
-    let sec: u64 = caps.get(3)?.as_str().parse().ok()?;
-    Some(h * 3600 + min * 60 + sec)
+    let yt = regex::Regex::new(r"ETA\s+(?:(\d+):)?(\d+):(\d+)").unwrap();
+    if let Some(caps) = yt.captures(line) {
+        let h: u64 = caps.get(1).map(|m| m.as_str().parse().unwrap_or(0)).unwrap_or(0);
+        let min: u64 = caps.get(2)?.as_str().parse().ok()?;
+        let sec: u64 = caps.get(3)?.as_str().parse().ok()?;
+        return Some(h * 3600 + min * 60 + sec);
+    }
+    // aria2c prints ETA:6s, ETA:1m30s or ETA:1h2m3s.
+    let aria = regex::Regex::new(r"ETA:(?:(\d+)h)?(?:(\d+)m)?(?:(\d+)s)?").unwrap();
+    if let Some(caps) = aria.captures(line) {
+        let h: u64 = caps.get(1).map(|m| m.as_str().parse().unwrap_or(0)).unwrap_or(0);
+        let min: u64 = caps.get(2).map(|m| m.as_str().parse().unwrap_or(0)).unwrap_or(0);
+        let sec: u64 = caps.get(3).map(|m| m.as_str().parse().unwrap_or(0)).unwrap_or(0);
+        return Some(h * 3600 + min * 60 + sec);
+    }
+    None
 }
 
 /// Return the running app's version string (shown in Settings → Updates).
@@ -688,5 +753,21 @@ mod tests {
         let final_line = "[download] 100% of    1.05KiB in 00:00:00 at 8.68KiB/s";
         assert!((extract_pct(final_line) - 100.0).abs() < 0.001);
         assert_eq!(extract_speed(final_line), Some(8888));
+    }
+
+    #[test]
+    fn parses_aria2c_progress_summary() {
+        let line = "[#8dde18 0.9MiB/2.7MiB(33%) CN:3 DL:2.7MiB ETA:1s]";
+        assert!((extract_pct(line) - 33.0).abs() < 0.001);
+        assert_eq!(extract_speed(line), Some(2_831_155)); // 2.7 MiB/s
+        assert_eq!(extract_eta(line), Some(1));
+    }
+
+    #[test]
+    fn parses_aria2c_compound_eta() {
+        let line = "[#aa8a23 138MiB/152MiB(90%) CN:8 DL:45MiB ETA:1m30s]";
+        assert_eq!(extract_eta(line), Some(90));
+        let line2 = "[#aa8a23 138MiB/152MiB(90%) CN:8 DL:45MiB ETA:1h2m3s]";
+        assert_eq!(extract_eta(line2), Some(3723));
     }
 }

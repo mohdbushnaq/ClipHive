@@ -15,6 +15,7 @@ Paste **any** URL — an article, course page, blog post, social profile. ClipHi
 - **Quality selection** — Auto (best available), 4K, 1080p, 720p, 480p, 360p
 - **Format options** — MP4, WebM, or audio-only (MP3/M4A)
 - **Real-time progress** — speed, ETA, and percentage for every download
+- **Multi-connection downloads** — files are split across up to 16 parallel connections (bundled aria2c) to make the most of your available bandwidth; fragmented streams download several fragments at once
 - **Pause / Resume / Cancel** — full control over active downloads
 - **Concurrent downloads** — run multiple at once with configurable limits
 
@@ -23,6 +24,7 @@ Paste multiple video URLs (one per line), validate them all at once, see which a
 
 ### ⚙️ Settings
 - Default quality and format preferences
+- Connections per download (1–16, default 8) for multi-connection speed
 - Speed limit (MB/s) to preserve bandwidth
 - Proxy support for restricted networks
 - Custom filename patterns (`{title}_{quality}`, etc.)
@@ -175,7 +177,7 @@ cliphive/
 │   ├── tauri.conf.json     # App config, window settings, bundle + updater options
 │   ├── capabilities/       # Tauri 2 ACL permissions (updater, process)
 │   ├── icons/icon.ico      # App icon (multi-resolution)
-│   ├── resources/          # Bundled binaries (yt-dlp, ffmpeg)
+│   ├── resources/          # Bundled binaries (yt-dlp, ffmpeg, ffprobe, aria2c)
 │   └── src/
 │       ├── main.rs         # Entry point
 │       ├── lib.rs          # Tauri commands (IPC API exposed to frontend)
@@ -183,7 +185,7 @@ cliphive/
 │       ├── page_scan/      # Page scanner (HTML → video extraction)
 │       └── settings/       # Settings persistence (%APPDATA%)
 ├── scripts/
-│   ├── fetch-resources.ps1 # Downloads bundled binaries (yt-dlp, ffmpeg) for building
+│   ├── fetch-resources.ps1 # Downloads bundled binaries (yt-dlp, ffmpeg, aria2c) for building
 │   └── publish-update.ps1  # Signs a build + generates update-manifest.json for releases
 ├── package.json            # Frontend build tooling (Vite + Tauri CLI)
 ├── vite.config.js          # Vite configuration
@@ -208,6 +210,7 @@ cliphive/
 │  • yt-dlp.exe   — video extraction engine   │
 │  • ffmpeg.exe   — codec/merge support       │
 │  • ffprobe.exe  — format detection          │
+│  • aria2c.exe   — multi-connection download │
 └─────────────────────────────────────────────┘
 ```
 

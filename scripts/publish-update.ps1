@@ -45,7 +45,13 @@ if (-not $Version) { throw "Could not determine the version. Pass it explicitly:
 
 # --- 2) Sign the installer (bound to this version) ---------------------------
 Write-Host "Signing $($installer.Name) as v$Version ..." -ForegroundColor Cyan
-& npx tauri signer sign $installer.FullName -f $keyFile --app-version $Version | Out-Null
+$oldLocation = Get-Location
+Set-Location $root   # so npx resolves the project-local Tauri CLI
+try {
+    & npx tauri signer sign $installer.FullName -f $keyFile --app-version $Version | Out-Null
+} finally {
+    Set-Location $oldLocation
+}
 $sigPath = "$($installer.FullName).sig"
 if (-not (Test-Path $sigPath)) { throw "Signing failed: no .sig file was produced." }
 $signature = (Get-Content $sigPath -Raw).Trim()

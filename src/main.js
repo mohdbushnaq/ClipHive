@@ -330,6 +330,7 @@ async function loadSettings(){
   document.getElementById('set-quality').value = settings.default_quality || 'auto';
   document.getElementById('set-format').value = settings.default_format || 'mp4';
   document.getElementById('set-concurrent').value = settings.max_concurrent || 3;
+  document.getElementById('set-connections').value = settings.connections || 8;
   document.getElementById('set-speed').value = settings.speed_limit_mbps ?? 0;
   document.getElementById('set-proxy').value = settings.proxy_url || '';
   document.getElementById('set-subfolder').checked = !!settings.create_subfolder;
@@ -346,6 +347,7 @@ document.getElementById('btn-save-settings').addEventListener('click', async () 
   settings.default_quality=document.getElementById('set-quality').value;
   settings.default_format=document.getElementById('set-format').value;
   settings.max_concurrent=parseInt(document.getElementById('set-concurrent').value)||3;
+  settings.connections=Math.max(1, Math.min(16, parseInt(document.getElementById('set-connections').value)||8));
   settings.speed_limit_mbps=parseInt(document.getElementById('set-speed').value)||0;
   settings.proxy_url=document.getElementById('set-proxy').value||null;
   settings.create_subfolder=document.getElementById('set-subfolder').checked;

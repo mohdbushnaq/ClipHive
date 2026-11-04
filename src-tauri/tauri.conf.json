@@ -1,6 +1,6 @@
 {
   "productName": "ClipHive",
-  "version": "0.1.2",
+  "version": "0.2.0",
   "identifier": "com.cliphive.app",
   "build": {
     "beforeBuildCommand": "npm run build",
@@ -37,7 +37,8 @@
     "resources": [
       "resources/yt-dlp.exe",
       "resources/ffmpeg.exe",
-      "resources/ffprobe.exe"
+      "resources/ffprobe.exe",
+      "resources/aria2c.exe"
     ],
     "icon": [
       "icons/icon.ico"

@@ -1,6 +1,6 @@
 [package]
 name = "cliphive"
-version = "0.1.2"
+version = "0.2.0"
 description = "ClipHive — Every video on any page. One paste. No install."
 authors = ["you"]
 edition = "2021"
