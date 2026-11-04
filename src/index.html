@@ -72,6 +72,43 @@
         <button id="btn-queue-multi" class="btn btn-primary btn-lg">Download All</button>
       </div>
 
+      <!-- Playlist results -->
+      <div id="playlist-panel" hidden>
+        <div class="video-head">
+          <h2 id="playlist-title"></h2>
+        </div>
+        <p id="playlist-meta" class="muted small"></p>
+        <div class="form-row">
+          <label>Quality
+            <select id="pl-quality">
+              <option value="auto">Auto (best)</option>
+              <option value="2160p">4K</option>
+              <option value="1080p">Full HD</option>
+              <option value="720p">HD</option>
+              <option value="480p">480p</option>
+              <option value="360p">360p</option>
+            </select>
+          </label>
+          <div class="format-group" role="radiogroup" aria-label="Playlist format">
+            <label><input type="radio" name="plfmt" value="mp4" checked /> MP4</label>
+            <label><input type="radio" name="plfmt" value="webm" /> WebM</label>
+            <label><input type="radio" name="plfmt" value="audio_mp3" /> Audio MP3</label>
+          </div>
+        </div>
+        <div class="scan-actions">
+          <button id="btn-pl-select-all" class="link-btn">Select All</button>
+          <span>|</span>
+          <button id="btn-pl-none" class="link-btn muted">None</button>
+          <span id="pl-selected-count" class="muted"></span>
+        </div>
+        <ul id="playlist-list" role="list"></ul>
+        <div class="btn-row">
+          <button id="btn-pl-download" class="btn btn-primary btn-lg">Download Selected</button>
+          <button id="btn-pl-download-all" class="btn btn-secondary">Download All</button>
+        </div>
+        <p id="playlist-note" class="muted small"></p>
+      </div>
+
       <!-- Page scan results -->
       <div id="scan-results" hidden>
         <h2><span id="scan-count"></span> videos found on this page</h2>

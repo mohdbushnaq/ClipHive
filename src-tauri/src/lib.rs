@@ -79,6 +79,33 @@ fn resolve_output_dir() -> PathBuf {
     dir
 }
 
+/// Turn a playlist title into a safe single folder name.
+fn safe_folder_name(input: &str) -> String {
+    let mut s: String = input
+        .chars()
+        .map(|c| {
+            if c.is_control() || "<>:\"/\\|?*".contains(c) {
+                ' '
+            } else {
+                c
+            }
+        })
+        .collect();
+    s = s.split_whitespace().collect::<Vec<_>>().join(" ");
+    s = s.chars().take(80).collect();
+    s = s.trim().trim_end_matches('.').to_string();
+    if s.is_empty() || s == "." || s == ".." {
+        return "Playlist".into();
+    }
+    let stem = s.split('.').next().unwrap_or("").to_lowercase();
+    let reserved = ["con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "lpt1", "lpt2", "lpt3"];
+    if reserved.contains(&stem.as_str()) {
+        format!("{}_playlist", s)
+    } else {
+        s
+    }
+}
+
 /// Find the most recently modified media file in a directory (locates a finished download).
 fn latest_media_file(dir: &std::path::Path) -> Option<String> {
     let exts = ["mp4","webm","mkv","mov","avi","mp3","m4a","flac","wav"];
@@ -194,6 +221,24 @@ pub struct PageScanResult {
     pub videos: Vec<ScannedVideo>,
 }
 
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistEntry {
+    pub url: String,
+    pub title: String,
+    pub video_id: Option<String>,
+    pub thumbnail_url: Option<String>,
+    pub duration_sec: Option<u64>,
+    pub index: u32,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct PlaylistInfo {
+    pub url: String,
+    pub title: String,
+    pub count: u64,
+    pub entries: Vec<PlaylistEntry>,
+}
+
 // --- Tauri Commands (exposed to frontend via window.__TAURI__) ---
 
 /// Analyze a video URL using yt-dlp --dump-json
@@ -236,6 +281,124 @@ async fn analyze_url(url: String) -> Result<VideoInfo, String> {
         platform: detect_platform(&url),
         qualities: parse_qualities(&data),
         subtitles: parse_subtitles(&data),
+    })
+}
+
+/// Parse yt-dlp's flat-playlist JSON lines into entries.
+fn parse_playlist_output(stdout: &str) -> (String, u64, Vec<PlaylistEntry>) {
+    let mut entries: Vec<PlaylistEntry> = Vec::new();
+    let mut playlist_title = String::new();
+    let mut total = 0u64;
+
+    for (i, line) in stdout.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let v: serde_json::Value = match serde_json::from_str(line) {
+            Ok(v) => v,
+            Err(_) => continue,
+        };
+        let entry_url = v["webpage_url"]
+            .as_str()
+            .or_else(|| v["url"].as_str())
+            .unwrap_or("")
+            .to_string();
+        if entry_url.is_empty() {
+            continue;
+        }
+        let video_id = v["id"].as_str().map(String::from);
+        let title = v["title"].as_str().unwrap_or("Untitled").to_string();
+        let duration_sec = v["duration"].as_u64();
+
+        // Use a stable YouTube thumbnail when possible; otherwise take the
+        // best thumbnail yt-dlp reported for the entry.
+        let thumbnail_url = if v["extractor_key"].as_str() == Some("Youtube") {
+            video_id
+                .as_ref()
+                .map(|id| format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", id))
+        } else if let Some(t) = v["thumbnail"].as_str() {
+            Some(t.to_string())
+        } else {
+            v["thumbnails"]
+                .as_array()
+                .and_then(|a| a.last())
+                .and_then(|t| t["url"].as_str())
+                .map(String::from)
+        };
+
+        if playlist_title.is_empty() {
+            playlist_title = v["playlist_title"]
+                .as_str()
+                .or_else(|| v["playlist"].as_str())
+                .unwrap_or("")
+                .to_string();
+        }
+        if total == 0 {
+            total = v["playlist_count"]
+                .as_u64()
+                .or_else(|| v["n_entries"].as_u64())
+                .unwrap_or(0);
+        }
+
+        entries.push(PlaylistEntry {
+            url: entry_url,
+            title,
+            video_id,
+            thumbnail_url,
+            duration_sec,
+            index: v["playlist_index"].as_u64().unwrap_or((i + 1) as u64) as u32,
+        });
+    }
+
+    (playlist_title, total, entries)
+}
+
+/// List every video in a playlist (flat metadata, no media download).
+#[tauri::command]
+async fn analyze_playlist(url: String) -> Result<PlaylistInfo, String> {
+    let mut cmd = ytdlp_command();
+    let output = tokio::time::timeout(
+        std::time::Duration::from_secs(180),
+        cmd.args([
+            "--flat-playlist",
+            "--dump-json",
+            "--no-warnings",
+            "--ignore-errors",
+            url.as_str(),
+        ])
+        .output(),
+    )
+    .await
+    .map_err(|_| "Timed out while reading the playlist.".to_string())?
+    .map_err(|e| format!("Failed to run yt-dlp: {}", e))?;
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let (mut playlist_title, mut total, entries) = parse_playlist_output(&stdout);
+
+    if entries.is_empty() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let msg = stderr
+            .lines()
+            .rev()
+            .find(|l| l.to_lowercase().contains("error"))
+            .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()))
+            .unwrap_or("No videos found in that playlist.");
+        return Err(msg.trim().to_string());
+    }
+
+    if total == 0 {
+        total = entries.len() as u64;
+    }
+    if playlist_title.is_empty() {
+        playlist_title = "Playlist".into();
+    }
+
+    Ok(PlaylistInfo {
+        url,
+        title: playlist_title,
+        count: total,
+        entries,
     })
 }
 
@@ -478,6 +641,7 @@ async fn start_download(
     format: String,
     title: Option<String>,
     thumbnail_url: Option<String>,
+    playlist_title: Option<String>,
 ) -> Result<String, String> {
     let id = uuid::Uuid::new_v4().to_string();
 
@@ -485,7 +649,12 @@ async fn start_download(
     let conns = settings.connections.clamp(1, 64);
     let aria2c_available = find_resource("aria2c.exe").is_some();
 
-    let output_dir = resolve_output_dir();
+    let mut output_dir = resolve_output_dir();
+    // Playlist downloads get their own subfolder inside the chosen location.
+    if let Some(name) = playlist_title.as_deref() {
+        output_dir = output_dir.join(safe_folder_name(name));
+        std::fs::create_dir_all(&output_dir).ok();
+    }
     let dir_str = output_dir.to_string_lossy().to_string();
 
     // Short, Windows-safe names: bounded title + video id. A fallback that uses
@@ -900,6 +1069,7 @@ pub fn run() {
         .manage(AppState { downloads: Mutex::new(load_library()) })
         .invoke_handler(tauri::generate_handler![
             analyze_url,
+            analyze_playlist,
             start_download,
             get_downloads,
             cancel_download,
@@ -917,7 +1087,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_pct, extract_speed, extract_eta};
+    use super::{extract_pct, extract_speed, extract_eta, parse_playlist_output, safe_folder_name};
 
     #[test]
     fn parses_yt_dlp_progress_line() {
@@ -960,4 +1130,32 @@ mod tests {
         let line2 = "[#aa8a23 138MiB/152MiB(90%) CN:8 DL:45MiB ETA:1h2m3s]";
         assert_eq!(extract_eta(line2), Some(3723));
     }
+
+    #[test]
+    fn makes_safe_playlist_folder_names() {
+        assert_eq!(safe_folder_name("4K/8K Videos Playlist"), "4K 8K Videos Playlist");
+        assert_eq!(safe_folder_name(".."), "Playlist");
+        assert_eq!(safe_folder_name("   "), "Playlist");
+        assert_eq!(safe_folder_name("CON"), "CON_playlist");
+        let long = "x".repeat(200);
+        assert!(safe_folder_name(&long).chars().count() <= 80);
+    }
+
+    #[test]
+    fn parses_flat_playlist_json() {
+        let out = concat!(
+            r#"{"_type":"url","id":"abc123","title":"A","url":"https://www.youtube.com/watch?v=abc123","webpage_url":"https://www.youtube.com/watch?v=abc123","duration":90,"playlist_index":1,"playlist_count":2,"playlist_title":"Test List","extractor_key":"Youtube"}"#,
+            "\n",
+            r#"{"_type":"url","id":"def456","title":"B","url":"https://example.com/v","duration":30,"playlist_index":2,"playlist_count":2,"playlist_title":"Test List","thumbnail":"https://example.com/t.jpg"}"#
+        );
+        let (title, total, entries) = parse_playlist_output(out);
+        assert_eq!(title, "Test List");
+        assert_eq!(total, 2);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].duration_sec, Some(90));
+        assert_eq!(entries[0].thumbnail_url.as_deref(), Some("https://i.ytimg.com/vi/abc123/hqdefault.jpg"));
+        assert_eq!(entries[1].thumbnail_url.as_deref(), Some("https://example.com/t.jpg"));
+    }
 }
+
+

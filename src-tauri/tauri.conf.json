@@ -1,6 +1,6 @@
 {
   "productName": "ClipHive",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "identifier": "com.cliphive.app",
   "build": {
     "beforeBuildCommand": "npm run build",

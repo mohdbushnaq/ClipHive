@@ -25,11 +25,16 @@ const errorMsg = document.getElementById('error-msg');
 const qualityPanel = document.getElementById('quality-panel');
 const scanResults = document.getElementById('scan-results');
 const multiResults = document.getElementById('multi-results');
+const playlistPanel = document.getElementById('playlist-panel');
 
 let currentVideo = null;      // single analyzed video {url,title,thumbnail_url,...}
 let pendingMulti = [];        // [{url,title,thumbnail}] for >1 URL
+let currentPlaylist = null;   // analyzed playlist {url,title,count,entries}
 const activeDl = new Map();   // id -> {title, thumbnail, file_path, dir}
 let settings = null;          // working copy of AppSettings
+let playlistQueue = [];       // pending playlist download jobs
+let playlistActive = 0;       // jobs currently running
+const playlistRunning = new Set(); // download ids started by the playlist queue
 
 function showError(msg){ errorMsg.textContent = msg; errorMsg.hidden = false; }
 function clearError(){ errorMsg.hidden = true; errorMsg.textContent=''; }
@@ -53,6 +58,16 @@ const PLACEHOLDER_THUMB =
     '<path d="M64 30v30l28-15z" fill="#4b4843"/></svg>'
   );
 
+function looksLikePlaylist(url){
+  return /[?&]list=|\/playlist(?:[\/?]|$)/i.test(String(url||''));
+}
+function formatDuration(sec){
+  if (sec == null || !Number.isFinite(sec)) return '';
+  const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60), s = sec % 60;
+  return h ? `${h}:${String(m).padStart(2,'0')}:${String(s).padStart(2,'0')}`
+           : `${m}:${String(s).padStart(2,'0')}`;
+}
+
 // --- Split pasted text into URLs (comma or newline separated) ---
 function splitUrls(text){
   return text.split(/[\n,]+/).map(s=>s.trim()).filter(Boolean);
@@ -63,25 +78,31 @@ btnAnalyze.addEventListener('click', async () => {
   const urls = splitUrls(urlInput.value);
   if (!urls.length) return;
   btnAnalyze.disabled = true; btnAnalyze.textContent='Reading…'; clearError();
-  qualityPanel.hidden=true; scanResults.hidden=true; multiResults.hidden=true;
+  qualityPanel.hidden=true; scanResults.hidden=true; multiResults.hidden=true; playlistPanel.hidden=true;
 
   try {
     if (urls.length === 1) {
-      const info = await invoke('analyze_url', { url: urls[0] });
-      currentVideo = info;
-      document.getElementById('video-title').textContent = info.title || 'Video';
-      const thumb = document.getElementById('single-thumb');
-      if (info.thumbnail_url){ thumb.src = info.thumbnail_url; thumb.style.display='block'; }
-      else { thumb.removeAttribute('src'); thumb.style.display='none'; }
-      const sel = document.getElementById('sel-quality');
-      sel.innerHTML='';
-      for (const q of (info.qualities||[])){
-        const opt=document.createElement('option');
-        opt.value = q.height===0 ? 'auto' : `${q.height}p`;
-        opt.textContent = q.label + (q.fps?` @ ${q.fps}fps`:'');
-        sel.appendChild(opt);
+      if (looksLikePlaylist(urls[0])) {
+        currentVideo = null;
+        const pl = await invoke('analyze_playlist', { url: urls[0] });
+        renderPlaylist(pl);
+      } else {
+        const info = await invoke('analyze_url', { url: urls[0] });
+        currentVideo = info;
+        document.getElementById('video-title').textContent = info.title || 'Video';
+        const thumb = document.getElementById('single-thumb');
+        if (info.thumbnail_url){ thumb.src = info.thumbnail_url; thumb.style.display='block'; }
+        else { thumb.removeAttribute('src'); thumb.style.display='none'; }
+        const sel = document.getElementById('sel-quality');
+        sel.innerHTML='';
+        for (const q of (info.qualities||[])){
+          const opt=document.createElement('option');
+          opt.value = q.height===0 ? 'auto' : `${q.height}p`;
+          opt.textContent = q.label + (q.fps?` @ ${q.fps}fps`:'');
+          sel.appendChild(opt);
+        }
+        qualityPanel.hidden=false;
       }
-      qualityPanel.hidden=false;
     } else {
       pendingMulti=[];
       for (const u of urls.slice(0,25)){
@@ -107,6 +128,118 @@ function renderMultiList(){
   }
   multiResults.hidden = pendingMulti.length===0;
 }
+
+// ================= PLAYLIST RESULTS =================
+function renderPlaylist(info){
+  currentPlaylist = info;
+  const entries = info.entries || [];
+  document.getElementById('playlist-title').textContent = info.title || 'Playlist';
+  const total = info.count || entries.length;
+  let meta = `${entries.length} video${entries.length===1?'':'s'}`;
+  if (total > entries.length) meta += ` (${total} in playlist)`;
+  document.getElementById('playlist-meta').textContent = meta;
+
+  const list = document.getElementById('playlist-list');
+  list.innerHTML = '';
+  for (const v of entries){
+    const li = document.createElement('li');
+    const label = document.createElement('label');
+    const cb = document.createElement('input');
+    cb.type = 'checkbox'; cb.checked = true; cb.dataset.url = v.url;
+    const img = document.createElement('img');
+    img.className = 'thumb-sm'; img.alt = ''; img.loading = 'lazy';
+    img.src = youtubeThumb(v.url) || v.thumbnail_url || PLACEHOLDER_THUMB;
+    img.onerror = () => { img.src = PLACEHOLDER_THUMB; };
+    const title = document.createElement('span');
+    title.className = 'pl-title'; title.textContent = v.title || v.url;
+    const dur = document.createElement('span');
+    dur.className = 'pl-duration'; dur.textContent = formatDuration(v.duration_sec);
+    label.append(cb, img, title, dur);
+    li.appendChild(label);
+    list.appendChild(li);
+  }
+
+  // Default quality/format follow the user's settings.
+  const q = document.getElementById('pl-quality');
+  const defQ = settings?.default_quality || 'auto';
+  q.value = [...q.options].some(o => o.value === defQ) ? defQ : 'auto';
+  const defFmt = settings?.default_format || 'mp4';
+  const radio = document.querySelector(`input[name="plfmt"][value="${defFmt}"]`);
+  if (radio) radio.checked = true;
+
+  playlistPanel.hidden = false;
+  updatePlaylistSelected();
+}
+
+function updatePlaylistSelected(){
+  const boxes = [...document.querySelectorAll('#playlist-list input[type="checkbox"]')];
+  const n = boxes.filter(b => b.checked).length;
+  document.getElementById('pl-selected-count').textContent = `${n} selected`;
+  document.getElementById('btn-pl-download').disabled = n === 0;
+}
+
+function playlistLimit(){
+  return Math.max(1, Math.min(10, settings?.max_concurrent || 3));
+}
+
+function pumpPlaylistQueue(){
+  const limit = playlistLimit();
+  while (playlistActive < limit && playlistQueue.length){
+    const job = playlistQueue.shift();
+    playlistActive++;
+    queueOne(job.url, job.quality, job.format, job.title, job.thumbnail, job.playlistName)
+      .then(id => { if (id) playlistRunning.add(id); })
+      .catch(e => {
+        playlistActive = Math.max(0, playlistActive - 1);
+        console.error('Playlist download failed to start:', errMsg(e));
+        pumpPlaylistQueue();
+      });
+  }
+}
+
+function enqueuePlaylist(entries, playlistName, quality, format){
+  if (!entries.length) return;
+  const jobs = entries.map(v => ({
+    url: v.url,
+    title: v.title,
+    thumbnail: youtubeThumb(v.url) || v.thumbnail_url || null,
+    quality,
+    format,
+    playlistName,
+  }));
+  playlistQueue.push(...jobs);
+  document.getElementById('playlist-note').textContent =
+    `Queued ${jobs.length} video${jobs.length===1?'':'s'} — downloading ${playlistLimit()} at a time.`;
+  pumpPlaylistQueue();
+}
+
+document.getElementById('playlist-list').addEventListener('change', updatePlaylistSelected);
+document.getElementById('btn-pl-select-all').addEventListener('click', () => {
+  document.querySelectorAll('#playlist-list input[type="checkbox"]').forEach(cb => cb.checked = true);
+  updatePlaylistSelected();
+});
+document.getElementById('btn-pl-none').addEventListener('click', () => {
+  document.querySelectorAll('#playlist-list input[type="checkbox"]').forEach(cb => cb.checked = false);
+  updatePlaylistSelected();
+});
+document.getElementById('btn-pl-download').addEventListener('click', () => {
+  if (!currentPlaylist) return;
+  const quality = document.getElementById('pl-quality').value || 'auto';
+  const formatEl = document.querySelector('input[name="plfmt"]:checked');
+  const format = formatEl ? formatEl.value : 'mp4';
+  const chosen = [...document.querySelectorAll('#playlist-list input[type="checkbox"]:checked')]
+    .map(cb => currentPlaylist.entries.find(v => v.url === cb.dataset.url))
+    .filter(Boolean);
+  if (!chosen.length) return;
+  enqueuePlaylist(chosen, currentPlaylist.title, quality, format);
+});
+document.getElementById('btn-pl-download-all').addEventListener('click', () => {
+  if (!currentPlaylist) return;
+  const quality = document.getElementById('pl-quality').value || 'auto';
+  const formatEl = document.querySelector('input[name="plfmt"]:checked');
+  const format = formatEl ? formatEl.value : 'mp4';
+  enqueuePlaylist(currentPlaylist.entries, currentPlaylist.title, quality, format);
+});
 
 // ================= SCAN PAGE =================
 btnScan.addEventListener('click', async () => {
@@ -142,10 +275,13 @@ document.getElementById('btn-deselect-all').addEventListener('click', () => {
 });
 
 // ================= QUEUE DOWNLOADS =================
-async function queueOne(url, quality, format, title, thumbnail){
+async function queueOne(url, quality, format, title, thumbnail, playlistName){
   const thumb = thumbnail || youtubeThumb(url) || null;
-  const id = await invoke('start_download', { url, quality, format, title: title||null, thumbnail_url: thumb });
+  const payload = { url, quality, format, title: title||null, thumbnail_url: thumb };
+  if (playlistName) payload.playlist_title = playlistName;
+  const id = await invoke('start_download', payload);
   if (id) activeDl.set(id, { title: title||'Video', thumbnail: thumb, file_path:null, dir:null });
+  return id;
 }
 
 document.getElementById('btn-queue').addEventListener('click', async () => {
@@ -174,7 +310,7 @@ document.getElementById('btn-queue-scanned').addEventListener('click', async () 
   resetForm();
 });
 
-function resetForm(){ urlInput.value=''; currentVideo=null; pendingMulti=[]; qualityPanel.hidden=true; scanResults.hidden=true; multiResults.hidden=true; }
+function resetForm(){ urlInput.value=''; currentVideo=null; pendingMulti=[]; currentPlaylist=null; qualityPanel.hidden=true; scanResults.hidden=true; multiResults.hidden=true; playlistPanel.hidden=true; }
 
 // ================= DOWNLOAD PROGRESS (thumbnail + name + bar + check) =================
 listen('download-event', (event) => {
@@ -244,6 +380,13 @@ listen('download-event', (event) => {
   } else if (status==='failed'){
     fill.style.background='var(--danger)';
     statusEl.textContent = 'Failed: ' + (error||''); statusEl.className='dl-status failed';
+  }
+
+  // Keep the playlist queue moving: one finished/failed job starts the next.
+  if ((status==='complete' || status==='failed') && playlistRunning.has(id)) {
+    playlistRunning.delete(id);
+    playlistActive = Math.max(0, playlistActive - 1);
+    pumpPlaylistQueue();
   }
 });
 

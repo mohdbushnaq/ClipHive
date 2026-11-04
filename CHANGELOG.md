@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-05
+
+### Added
+- **Playlist support.** Paste a playlist URL and ClipHive lists every video in it, with its thumbnail, title and duration. All videos are selected by default; you can tick/untick individual videos or use **Select All / None**, then press **Download Selected** or **Download All**.
+- Playlist downloads are placed in a dedicated subfolder named after the playlist, inside your chosen save location (e.g. `Videos\ClipHive\My Playlist\`). Unsafe characters in the playlist title are cleaned up so the folder name is always valid on Windows.
+- The playlist queue downloads several videos at a time using the **Max Concurrent Downloads** setting, rather than launching a huge number of downloads at once.
+- Playlist quality and format can be chosen before queuing, and default to your saved Settings preferences.
+
 ## [0.3.0] - 2026-11-04
 
 ### Fixed

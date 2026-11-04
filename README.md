@@ -22,6 +22,9 @@ Paste **any** URL — an article, course page, blog post, social profile. ClipHi
 ### 📋 Batch Mode
 Paste multiple video URLs (one per line), validate them all at once, see which are valid, and queue the good ones in a single click. Perfect for playlists of links you've collected.
 
+### 🎞️ Playlist Downloads
+Paste a playlist URL and ClipHive lists every video in it with thumbnails, titles and durations. Tick the videos you want (or leave all ticked) and press **Download Selected** or **Download All**. Quality and format are selectable before queuing. Each playlist is saved into its own subfolder inside your chosen download location.
+
 ### ⚙️ Settings
 - Default quality and format preferences
 - Connections per download (1–64, default 8) for multi-connection speed
