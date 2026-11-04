@@ -264,6 +264,8 @@ async fn start_download(
     args.push("-o".into());
     args.push(output_dir.join("%(title)s.%(ext)s").to_string_lossy().to_string());
     args.push("--no-playlist".into());
+    // Emit one progress line at a time (newline-terminated) instead of carriage-return updates.
+    args.push("--newline".into());
     args.push(url.clone());
 
     // Add to state as downloading (with title/thumbnail for the UI)
@@ -303,7 +305,7 @@ async fn start_download(
 
         let mut child = match cmd
             .args(&args)
-            .stdout(std::process::Stdio::null())
+            .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
             .spawn()
         {
@@ -316,30 +318,70 @@ async fn start_download(
             }
         };
 
-        // Read stderr for progress (yt-dlp prints progress to stderr)
-        if let Some(stderr) = child.stderr.take() {
-            use tokio::io::AsyncBufReadExt;
-            use tokio::io::BufReader;
-            let mut lines = BufReader::new(stderr).lines();
+        // Tell the UI a download has started before the first progress line arrives.
+        let _ = app_clone.emit("download-event", serde_json::json!({
+            "id": id_clone, "status": "downloading", "progress_pct": 0.0
+        }));
 
-            while let Ok(Some(line)) = lines.next_line().await {
-                if line.contains("[download]") && line.contains("%") {
-                    let pct = extract_pct(&line);
-                    let speed = extract_speed(&line);
-                    let eta = extract_eta(&line);
+        use tokio::io::{AsyncBufReadExt, BufReader};
+        use std::time::{Duration, Instant};
 
-                    let _ = app_clone.emit("download-event", serde_json::json!({
-                        "id": id_clone,
-                        "status": "downloading",
-                        "progress_pct": pct,
-                        "speed_bps": speed,
-                        "eta_sec": eta
-                    }));
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        // yt-dlp writes download progress to stdout, not stderr. Read both pipes
+        // concurrently so neither can fill up and stall the process.
+        let progress_handle = {
+            let app = app_clone.clone();
+            let id_line = id_clone.clone();
+            tokio::spawn(async move {
+                if let Some(out) = stdout {
+                    let mut lines = BufReader::new(out).lines();
+                    let mut last_emit = Instant::now() - Duration::from_secs(1);
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if !line.contains("[download]") || !line.contains('%') { continue; }
+                        // Keep the UI readable: at most ~8 updates per second.
+                        if last_emit.elapsed() < Duration::from_millis(120) { continue; }
+                        last_emit = Instant::now();
+                        let _ = app.emit("download-event", serde_json::json!({
+                            "id": id_line,
+                            "status": "downloading",
+                            "progress_pct": extract_pct(&line),
+                            "speed_bps": extract_speed(&line),
+                            "eta_sec": extract_eta(&line),
+                        }));
+                    }
                 }
-            }
-        }
+            })
+        };
+
+        let stderr_handle = {
+            tokio::spawn(async move {
+                let mut err_text = String::new();
+                if let Some(err) = stderr {
+                    let mut lines = BufReader::new(err).lines();
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if err_text.len() < 8000 {
+                            err_text.push_str(&line);
+                            err_text.push('\n');
+                        }
+                    }
+                }
+                err_text
+            })
+        };
 
         let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
+        let _ = progress_handle.await;
+        let err_text = stderr_handle.await.unwrap_or_default();
+        let error_line = err_text
+            .lines()
+            .rev()
+            .find(|l| l.to_lowercase().contains("error"))
+            .or_else(|| err_text.lines().rev().find(|l| !l.trim().is_empty()))
+            .unwrap_or("Download failed")
+            .trim()
+            .to_string();
         let file_path = if ok { latest_media_file(&output_dir_clone) } else { None };
         let dir_str = output_dir_clone.to_string_lossy().to_string();
 
@@ -349,6 +391,7 @@ async fn start_download(
             let mut dl = state.downloads.lock().unwrap();
             if let Some(item) = dl.iter_mut().find(|d| d.id == id_clone) {
                 item.status = if ok { "complete".into() } else { "failed".into() };
+                item.error = if ok { None } else { Some(error_line.clone()) };
                 if ok {
                     item.progress_pct = 100.0;
                     item.file_path = file_path.clone();
@@ -369,7 +412,7 @@ async fn start_download(
             "progress_pct": if ok { serde_json::json!(100.0) } else { serde_json::Value::Null },
             "file_path": file_path,
             "dir": dir_str,
-            "error": if ok { serde_json::Value::Null } else { serde_json::json!("Download failed") }
+            "error": if ok { serde_json::Value::Null } else { serde_json::json!(error_line) }
         }));
     });
 
@@ -573,12 +616,13 @@ fn extract_speed(line: &str) -> Option<u64> {
 }
 
 fn extract_eta(line: &str) -> Option<u64> {
-    let re = regex::Regex::new(r"ETA\s+(\d+):(\d+)").unwrap();
-    if let Some(caps) = re.captures(line) {
-        let min: u64 = caps.get(1)?.as_str().parse().ok()?;
-        let sec: u64 = caps.get(2)?.as_str().parse().ok()?;
-        Some(min * 60 + sec)
-    } else { None }
+    // yt-dlp prints ETA as mm:ss, or h:mm:ss for longer downloads.
+    let re = regex::Regex::new(r"ETA\s+(?:(\d+):)?(\d+):(\d+)").unwrap();
+    let caps = re.captures(line)?;
+    let h: u64 = caps.get(1).map(|m| m.as_str().parse().unwrap_or(0)).unwrap_or(0);
+    let min: u64 = caps.get(2)?.as_str().parse().ok()?;
+    let sec: u64 = caps.get(3)?.as_str().parse().ok()?;
+    Some(h * 3600 + min * 60 + sec)
 }
 
 /// Return the running app's version string (shown in Settings → Updates).
@@ -614,4 +658,35 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("error while running ClipHive");
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{extract_pct, extract_speed, extract_eta};
+
+    #[test]
+    fn parses_yt_dlp_progress_line() {
+        let line = "[download]  45.3% of    1.05MiB at  2.50MiB/s ETA 00:12";
+        assert!((extract_pct(line) - 45.3).abs() < 0.001);
+        assert_eq!(extract_speed(line), Some(2_621_440));
+        assert_eq!(extract_eta(line), Some(12));
+    }
+
+    #[test]
+    fn handles_unknown_speed_and_eta() {
+        let line = "[download]  10.0% of 1.05KiB at  Unknown B/s ETA Unknown";
+        assert!((extract_pct(line) - 10.0).abs() < 0.001);
+        assert_eq!(extract_speed(line), None);
+        assert_eq!(extract_eta(line), None);
+    }
+
+    #[test]
+    fn handles_hour_long_eta_and_final_line() {
+        let long = "[download]  50.0% of 2.00GiB at 1.00MiB/s ETA 01:02:03";
+        assert_eq!(extract_eta(long), Some(3723));
+
+        let final_line = "[download] 100% of    1.05KiB in 00:00:00 at 8.68KiB/s";
+        assert!((extract_pct(final_line) - 100.0).abs() < 0.001);
+        assert_eq!(extract_speed(final_line), Some(8888));
+    }
 }

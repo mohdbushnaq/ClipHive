@@ -63,8 +63,10 @@ label { font-size: 14px; display: flex; flex-direction: column; gap: 6px; }
 .format-group input[type="radio"] { margin-right: 4px; accent-color: var(--accent); }
 
 /* Progress */
-.progress-bar { height: 6px; background: var(--surface-raised); border-radius: var(--radius-pill); overflow: hidden; margin-top: 8px; }
-.progress-fill { height: 100%; background: var(--accent); border-radius: var(--radius-pill); transition: width .5s ease; }
+.dl-progress-row { display: flex; align-items: center; gap: 10px; margin-top: 8px; }
+.progress-bar { height: 8px; background: var(--surface-raised); border-radius: var(--radius-pill); overflow: hidden; flex: 1; }
+.progress-pct { font-size: 12px; color: var(--text-muted); min-width: 46px; text-align: right; font-variant-numeric: tabular-nums; }
+.progress-fill { height: 100%; background: var(--accent); border-radius: var(--radius-pill); transition: width .3s linear; }
 .progress-fill.complete { background: var(--success); }
 .download-item { padding: 14px; border: 1px solid var(--border); border-radius: var(--radius-md); margin-bottom: 8px; background: var(--surface); }
 .download-item .title { font-size: 14px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }

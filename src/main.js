@@ -179,21 +179,30 @@ listen('download-event', (event) => {
     img.onerror=()=>{ img.style.display='none'; };
     const body=document.createElement('div'); body.className='dl-body';
     const titleEl=document.createElement('p'); titleEl.className='title'; titleEl.textContent = meta.title || 'Video';
+    const progressRow=document.createElement('div'); progressRow.className='dl-progress-row';
     const barOuter=document.createElement('div'); barOuter.className='progress-bar';
     const fill=document.createElement('div'); fill.className='progress-fill'; fill.style.width='0%';
     barOuter.appendChild(fill);
+    const pctEl=document.createElement('span'); pctEl.className='progress-pct'; pctEl.textContent='0%';
+    progressRow.appendChild(barOuter); progressRow.appendChild(pctEl);
     const statusEl=document.createElement('span'); statusEl.className='dl-status'; statusEl.textContent='Starting…';
-    body.appendChild(titleEl); body.appendChild(barOuter); body.appendChild(statusEl);
+    body.appendChild(titleEl); body.appendChild(progressRow); body.appendChild(statusEl);
     row.appendChild(img); row.appendChild(body); card.appendChild(row);
     list.prepend(card);
   }
 
   const fill=card.querySelector('.progress-fill');
+  const pctEl=card.querySelector('.progress-pct');
   const statusEl=card.querySelector('.dl-status');
   const existingActions=card.querySelector('.actions'); if (existingActions) existingActions.remove();
 
   if (status==='downloading'){
-    if (progress_pct!==undefined && progress_pct!==null) fill.style.width=`${Math.min(100,progress_pct)}%`;
+    if (progress_pct!==undefined && progress_pct!==null){
+      const pct=Math.max(0, Math.min(100, progress_pct));
+      fill.style.width=`${pct}%`;
+      fill.classList.remove('complete');
+      pctEl.textContent=`${pct.toFixed(1)}%`;
+    }
     let txt='Downloading…';
     const bits=[];
     if (speed_bps) bits.push(formatSpeed(speed_bps));
@@ -201,7 +210,7 @@ listen('download-event', (event) => {
     if (bits.length) txt += '  ·  ' + bits.join('  ·  ');
     statusEl.textContent=txt; statusEl.className='dl-status';
   } else if (status==='complete'){
-    fill.style.width='100%'; fill.classList.add('complete');
+    fill.style.width='100%'; fill.classList.add('complete'); pctEl.textContent='100%';
     statusEl.innerHTML='<span class="check">✓</span> Done'; statusEl.className='dl-status done';
     addActions(card, meta);
   } else if (status==='failed'){

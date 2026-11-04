@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-04
+
+### Fixed
+- **Live download progress.** The progress bar never moved because the backend read yt-dlp's progress from stderr, while yt-dlp writes it to stdout, and it was suppressed by `Stdio::null()`. Progress is now streamed from stdout with `--newline`.
+- Download cards show a real progress bar with the exact percentage, current download speed and ETA as the transfer runs.
+- Failed downloads now report yt-dlp's actual error line instead of a generic "Download failed".
+
 ## [0.1.1] - 2026-11-04
 
 ### Fixed
