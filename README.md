@@ -148,7 +148,7 @@ src-tauri/target/release/bundle/nsis/ClipHive_X.Y.Z_x64-setup.exe
 
 To ship a new version that existing installs can auto-update to:
 
-1. Bump the version in both `src-tauri/tauri.conf.json` and `package.json`.
+1. Bump the version in `src-tauri/tauri.conf.json`, `src-tauri/Cargo.toml` and `package.json`.
 2. Build the installer:
    ```bash
    npx tauri build
@@ -161,7 +161,7 @@ To ship a new version that existing installs can auto-update to:
    - the installer (`ClipHive_X.Y.Z_x64-setup.exe`)
    - `update-manifest.json`
 
-Existing installs will then find it via **Settings → Check for updates**.
+Existing installs will then find it automatically on next launch (or via **Settings → Check for updates**).
 
 > The updater verifies each release's signature against a public key baked into the app. Keep your private signing key (`tauri-updater.key`) safe — if you lose it, existing users can no longer receive signed updates. It is git-ignored on purpose and must never be committed.
 
