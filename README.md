@@ -16,8 +16,7 @@ Paste **any** URL — an article, course page, blog post, social profile. ClipHi
 - **Format options** — MP4, WebM, or audio-only (MP3/M4A)
 - **Real-time progress** — speed, ETA, and percentage for every download
 - **Multi-connection downloads** — files are split across up to 64 parallel connections (bundled aria2c) to make the most of your available bandwidth; fragmented streams download several fragments at once
-- **Pause / Resume / Cancel** — full control over active downloads
-- **Concurrent downloads** — run multiple at once with configurable limits
+- **Concurrent downloads** — a queue runs at most your configured number of downloads at once
 
 ### 📋 Batch Mode
 Paste multiple video URLs (one per line), validate them all at once, see which are valid, and queue the good ones in a single click. Perfect for playlists of links you've collected.
@@ -30,7 +29,6 @@ Paste a playlist URL and ClipHive lists every video in it with thumbnails, title
 - Connections per download (1–64, default 8) for multi-connection speed
 - Speed limit (MB/s) to preserve bandwidth
 - Proxy support for restricted networks
-- Custom filename patterns (`{title}_{quality}`, etc.)
 - Dark theme (built-in)
 - Settings save automatically — no Save button
 

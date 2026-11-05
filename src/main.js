@@ -32,9 +32,9 @@ let pendingMulti = [];        // [{url,title,thumbnail}] for >1 URL
 let currentPlaylist = null;   // analyzed playlist {url,title,count,entries}
 const activeDl = new Map();   // id -> {title, thumbnail, file_path, dir}
 let settings = null;          // working copy of AppSettings
-let playlistQueue = [];       // pending playlist download jobs
-let playlistActive = 0;       // jobs currently running
-const playlistRunning = new Set(); // download ids started by the playlist queue
+let downloadQueue = [];       // jobs waiting for a free download slot
+let activeDownloads = 0;      // download processes currently running
+const runningDownloads = new Set(); // ids started by the download queue
 
 function showError(msg){ errorMsg.textContent = msg; errorMsg.hidden = false; }
 function clearError(){ errorMsg.hidden = true; errorMsg.textContent=''; }
@@ -101,6 +101,11 @@ btnAnalyze.addEventListener('click', async () => {
           opt.textContent = q.label + (q.fps?` @ ${q.fps}fps`:'');
           sel.appendChild(opt);
         }
+        const defQ = settings?.default_quality || 'auto';
+        if ([...sel.options].some(o => o.value === defQ)) sel.value = defQ;
+        const defFmt = settings?.default_format || 'mp4';
+        const fmtRadio = document.querySelector(`input[name="fmt"][value="${defFmt}"]`);
+        if (fmtRadio) fmtRadio.checked = true;
         qualityPanel.hidden=false;
       }
     } else {
@@ -178,39 +183,45 @@ function updatePlaylistSelected(){
   document.getElementById('btn-pl-download').disabled = n === 0;
 }
 
-function playlistLimit(){
+function downloadLimit(){
   return Math.max(1, Math.min(10, settings?.max_concurrent || 3));
 }
 
-function pumpPlaylistQueue(){
-  const limit = playlistLimit();
-  while (playlistActive < limit && playlistQueue.length){
-    const job = playlistQueue.shift();
-    playlistActive++;
-    queueOne(job.url, job.quality, job.format, job.title, job.thumbnail, job.playlistName)
-      .then(id => { if (id) playlistRunning.add(id); })
-      .catch(e => {
-        playlistActive = Math.max(0, playlistActive - 1);
-        console.error('Playlist download failed to start:', errMsg(e));
-        pumpPlaylistQueue();
-      });
+function startQueuedJob(job){
+  activeDownloads++;
+  const thumb = job.thumbnail || youtubeThumb(job.url) || null;
+  const payload = { url: job.url, quality: job.quality, format: job.format,
+                    title: job.title || null, thumbnail_url: thumb };
+  if (job.playlistName) payload.playlist_title = job.playlistName;
+
+  invoke('start_download', payload).then(id => {
+    if (id) {
+      runningDownloads.add(id);
+      activeDl.set(id, { title: job.title || 'Video', thumbnail: thumb, file_path: null, dir: null });
+    }
+    if (job.resolve) job.resolve(id);
+  }).catch(e => {
+    activeDownloads = Math.max(0, activeDownloads - 1);
+    if (job.reject) job.reject(e);
+    pumpDownloadQueue();
+  });
+}
+
+function pumpDownloadQueue(){
+  while (activeDownloads < downloadLimit() && downloadQueue.length){
+    startQueuedJob(downloadQueue.shift());
   }
 }
 
 function enqueuePlaylist(entries, playlistName, quality, format){
   if (!entries.length) return;
-  const jobs = entries.map(v => ({
-    url: v.url,
-    title: v.title,
-    thumbnail: youtubeThumb(v.url) || v.thumbnail_url || null,
-    quality,
-    format,
-    playlistName,
-  }));
-  playlistQueue.push(...jobs);
+  for (const v of entries){
+    queueOne(v.url, quality, format, v.title,
+             youtubeThumb(v.url) || v.thumbnail_url || null, playlistName)
+      .catch(e => console.error('Playlist download failed to start:', errMsg(e)));
+  }
   document.getElementById('playlist-note').textContent =
-    `Queued ${jobs.length} video${jobs.length===1?'':'s'} — downloading ${playlistLimit()} at a time.`;
-  pumpPlaylistQueue();
+    `Queued ${entries.length} video${entries.length===1?'':'s'} — downloading ${downloadLimit()} at a time.`;
 }
 
 document.getElementById('playlist-list').addEventListener('change', updatePlaylistSelected);
@@ -275,38 +286,45 @@ document.getElementById('btn-deselect-all').addEventListener('click', () => {
 });
 
 // ================= QUEUE DOWNLOADS =================
-async function queueOne(url, quality, format, title, thumbnail, playlistName){
-  const thumb = thumbnail || youtubeThumb(url) || null;
-  const payload = { url, quality, format, title: title||null, thumbnail_url: thumb };
-  if (playlistName) payload.playlist_title = playlistName;
-  const id = await invoke('start_download', payload);
-  if (id) activeDl.set(id, { title: title||'Video', thumbnail: thumb, file_path:null, dir:null });
-  return id;
+function queueOne(url, quality, format, title, thumbnail, playlistName){
+  return new Promise((resolve, reject) => {
+    downloadQueue.push({ url, quality, format, title, thumbnail, playlistName, resolve, reject });
+    pumpDownloadQueue();
+  });
 }
 
-document.getElementById('btn-queue').addEventListener('click', async () => {
+document.getElementById('btn-queue').addEventListener('click', () => {
   if (!currentVideo) return;
   const quality = document.getElementById('sel-quality').value || 'auto';
   const formatEl = document.querySelector('input[name="fmt"]:checked');
   const format = formatEl ? formatEl.value : 'mp4';
-  try { await queueOne(currentVideo.url, quality, format, currentVideo.title, currentVideo.thumbnail_url); resetForm(); }
-  catch (e) { showError(errMsg(e) || 'Failed to start download.'); }
+  queueOne(currentVideo.url, quality, format, currentVideo.title, currentVideo.thumbnail_url)
+    .catch(e => showError(errMsg(e) || 'Failed to start download.'));
+  resetForm();
 });
 
-document.getElementById('btn-queue-multi').addEventListener('click', async () => {
+document.getElementById('btn-queue-multi').addEventListener('click', () => {
   const checked=[...document.querySelectorAll('#multi-list input[type="checkbox"]:checked')];
   if (!checked.length) return;
+  const quality = settings?.default_quality || 'auto';
+  const format = settings?.default_format || 'mp4';
   for (const cb of checked){
     const v = pendingMulti.find(x=>x.url===cb.dataset.url);
-    try { await queueOne(cb.dataset.url, 'auto', 'mp4', v?v.title:null, v?v.thumbnail:null); } catch(e){}
+    queueOne(cb.dataset.url, quality, format, v?v.title:null, v?v.thumbnail:null)
+      .catch(e => console.error('Download failed to start:', errMsg(e)));
   }
   resetForm();
 });
 
-document.getElementById('btn-queue-scanned').addEventListener('click', async () => {
+document.getElementById('btn-queue-scanned').addEventListener('click', () => {
   const checked=[...document.querySelectorAll('#scan-list input[type="checkbox"]:checked')];
   if (!checked.length) return;
-  for (const cb of checked){ try { await queueOne(cb.dataset.url, 'auto', 'mp4', null, null); } catch(e){} }
+  const quality = settings?.default_quality || 'auto';
+  const format = settings?.default_format || 'mp4';
+  for (const cb of checked){
+    queueOne(cb.dataset.url, quality, format, null, null)
+      .catch(e => console.error('Download failed to start:', errMsg(e)));
+  }
   resetForm();
 });
 
@@ -382,11 +400,15 @@ listen('download-event', (event) => {
     statusEl.textContent = 'Failed: ' + (error||''); statusEl.className='dl-status failed';
   }
 
-  // Keep the playlist queue moving: one finished/failed job starts the next.
-  if ((status==='complete' || status==='failed') && playlistRunning.has(id)) {
-    playlistRunning.delete(id);
-    playlistActive = Math.max(0, playlistActive - 1);
-    pumpPlaylistQueue();
+  // Keep the download queue moving: one finished/failed job starts the next.
+  if ((status==='complete' || status==='failed') && runningDownloads.has(id)) {
+    runningDownloads.delete(id);
+    activeDownloads = Math.max(0, activeDownloads - 1);
+    pumpDownloadQueue();
+  }
+
+  if (status==='complete' && document.getElementById('tab-library').classList.contains('active')) {
+    renderLibrary();
   }
 });
 
@@ -531,7 +553,7 @@ function collectSettings(){
   settings.default_format=document.getElementById('set-format').value;
   settings.max_concurrent=Math.max(1, Math.min(10, parseInt(document.getElementById('set-concurrent').value)||3));
   settings.connections=clampConnections();
-  settings.speed_limit_mbps=Math.max(0, parseInt(document.getElementById('set-speed').value)||0);
+  settings.speed_limit_mbps=Math.min(100, Math.max(0, parseInt(document.getElementById('set-speed').value)||0));
   const proxy=document.getElementById('set-proxy').value.trim();
   settings.proxy_url = proxy || null;
   settings.create_subfolder=document.getElementById('set-subfolder').checked;

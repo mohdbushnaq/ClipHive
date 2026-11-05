@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-05
+
+### Fixed
+- **Max Concurrent Downloads now applies to every download**, not only playlists. Single videos, multi-URL batches and page-scan results share one queue and respect the setting.
+- **Download cards now point at the correct file when several downloads run at once.** Each yt-dlp attempt now reports its final path (`--print after_move:filepath`); the card no longer guesses the newest file in the shared folder.
+- **Speed limit and proxy settings are now actually used.** The MB/s limit is applied to yt-dlp and aria2c, and the proxy is applied to analysis, downloads and page scans.
+- **Default quality/format now apply to single videos, multi-URL batches and page-scan downloads**, matching the playlist panel.
+- **Folder creation errors are reported** instead of silently continuing into a missing playlist folder.
+- **Reveal in folder** now passes Explorer a valid `/select,<path>` argument.
+- **Download error text** now picks yt-dlp's real error instead of the first warning line; merge failures are no longer mislabelled as "out of disk space".
+- **The Library refreshes automatically** when a download finishes while the Library tab is open.
+- Removed the unused cancel command that killed every yt-dlp process, and removed the README claim about pause/resume/cancel, which was never implemented.
+- Playlist folder names now also guard `COM5`–`COM9` and `LPT4`–`LPT9` reserved names.
+
 ## [0.4.0] - 2026-11-05
 
 ### Added

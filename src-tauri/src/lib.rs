@@ -65,7 +65,7 @@ fn ffmpeg_dir() -> Option<PathBuf> {
 }
 
 /// Resolve (and create) the effective download output directory from settings.
-fn resolve_output_dir() -> PathBuf {
+fn resolve_output_dir() -> Result<PathBuf, String> {
     let s = settings::load().unwrap_or_default();
     let base = s.download_path
         .as_ref()
@@ -75,8 +75,9 @@ fn resolve_output_dir() -> PathBuf {
         .or_else(|| dirs::video_dir())
         .unwrap_or_else(|| PathBuf::from("."));
     let dir = if s.create_subfolder { base.join("ClipHive") } else { base };
-    std::fs::create_dir_all(&dir).ok();
-    dir
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Cannot create download folder {}: {}", dir.display(), e))?;
+    Ok(dir)
 }
 
 /// Turn a playlist title into a safe single folder name.
@@ -98,7 +99,11 @@ fn safe_folder_name(input: &str) -> String {
         return "Playlist".into();
     }
     let stem = s.split('.').next().unwrap_or("").to_lowercase();
-    let reserved = ["con", "prn", "aux", "nul", "com1", "com2", "com3", "com4", "lpt1", "lpt2", "lpt3"];
+    let reserved = [
+        "con", "prn", "aux", "nul",
+        "com1", "com2", "com3", "com4", "com5", "com6", "com7", "com8", "com9",
+        "lpt1", "lpt2", "lpt3", "lpt4", "lpt5", "lpt6", "lpt7", "lpt8", "lpt9",
+    ];
     if reserved.contains(&stem.as_str()) {
         format!("{}_playlist", s)
     } else {
@@ -244,19 +249,7 @@ pub struct PlaylistInfo {
 /// Analyze a video URL using yt-dlp --dump-json
 #[tauri::command]
 async fn analyze_url(url: String) -> Result<VideoInfo, String> {
-    let ytdlp = resource_path("yt-dlp.exe");
-
-    // Add ffmpeg dir to PATH for this process
-    let mut cmd = Command::new(&ytdlp);
-    #[cfg(windows)]
-    {
-        const CREATE_NO_WINDOW: u32 = 0x08000000;
-        cmd.creation_flags(CREATE_NO_WINDOW);
-    }
-    if let Some(dir) = ffmpeg_dir() {
-        let path_env = format!("{};{}", dir.display(), std::env::var("PATH").unwrap_or_default());
-        cmd.env("PATH", path_env);
-    }
+    let mut cmd = ytdlp_command();
 
     let output = cmd
         .args(["--dump-json", "--no-playlist", &url])
@@ -266,7 +259,13 @@ async fn analyze_url(url: String) -> Result<VideoInfo, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(stderr.lines().next().unwrap_or("yt-dlp failed").to_string());
+        let msg = stderr
+            .lines()
+            .rev()
+            .find(|l| l.to_lowercase().contains("error"))
+            .or_else(|| stderr.lines().rev().find(|l| !l.trim().is_empty()))
+            .unwrap_or("yt-dlp failed");
+        return Err(msg.trim().to_string());
     }
 
     let stdout = String::from_utf8_lossy(&output.stdout);
@@ -430,6 +429,12 @@ fn ytdlp_command() -> Command {
         );
         cmd.env("PATH", path_env);
     }
+
+    // Apply the saved proxy to every yt-dlp call (analysis and download).
+    let s = settings::load().unwrap_or_default();
+    if let Some(p) = s.proxy_url.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        cmd.arg("--proxy").arg(p);
+    }
     cmd
 }
 
@@ -466,8 +471,15 @@ fn build_download_args(
     conns: usize,
     use_aria2c: bool,
     template: &str,
+    limit_mbps: u32,
+    proxy: Option<&str>,
 ) -> Vec<String> {
     let mut args: Vec<String> = vec![];
+
+    if limit_mbps > 0 {
+        args.push("--limit-rate".into());
+        args.push(format!("{}M", limit_mbps.min(100)));
+    }
 
     if format.starts_with("audio_") {
         args.push("-x".into());
@@ -506,11 +518,23 @@ fn build_download_args(
         args.push("--downloader".into());
         args.push("aria2c".into());
         args.push("--downloader-args".into());
-        args.push(format!(
+        let mut aria = format!(
             "aria2c:-x{} -s{} -k1M --summary-interval=1 --console-log-level=warn --file-allocation=none",
             conns, conns
-        ));
+        );
+        if limit_mbps > 0 {
+            aria.push_str(&format!(" --max-overall-download-limit={}M", limit_mbps.min(100)));
+        }
+        if let Some(p) = proxy.map(str::trim).filter(|p| !p.is_empty()) {
+            aria.push_str(&format!(" --all-proxy={}", p));
+        }
+        args.push(aria);
     }
+
+    // Ask yt-dlp for the final path after post-processing, so concurrent
+    // downloads can be matched to their exact file.
+    args.push("--print".into());
+    args.push("after_move:filepath".into());
 
     args.push("-o".into());
     args.push(template.to_string());
@@ -524,8 +548,11 @@ fn friendly_download_error(raw: &str) -> String {
     if low.contains("errno 22") || low.contains("unable to open for writing") {
         return "Couldn't write the file — the name or save folder is invalid. Try a different save folder.".into();
     }
-    if low.contains("conversion failed") || low.contains("no space left") || low.contains("not enough space") {
+    if low.contains("no space left") || low.contains("not enough space") {
         return "Not enough free disk space to finish this download. A 4K/HDR video needs roughly twice its size free while it is merged.".into();
+    }
+    if low.contains("conversion failed") {
+        return "The downloaded streams could not be merged into the requested format. Try MP4, a lower quality, or free up disk space.".into();
     }
     if low.contains("http error 403") || low.contains("forbidden") {
         return "The video server refused the download (HTTP 403). Try again or pick a lower quality.".into();
@@ -543,7 +570,11 @@ fn friendly_download_error(raw: &str) -> String {
 }
 
 /// Run yt-dlp for one attempt, streaming progress to the UI.
-async fn run_ytdlp(app: &tauri::AppHandle, id: &str, args: &[String]) -> (bool, String) {
+async fn run_ytdlp(
+    app: &tauri::AppHandle,
+    id: &str,
+    args: &[String],
+) -> (bool, String, Option<String>) {
     let mut cmd = ytdlp_command();
     let mut child = match cmd
         .args(args)
@@ -552,7 +583,7 @@ async fn run_ytdlp(app: &tauri::AppHandle, id: &str, args: &[String]) -> (bool, 
         .spawn()
     {
         Ok(c) => c,
-        Err(e) => return (false, format!("Failed to run yt-dlp: {}", e)),
+        Err(e) => return (false, format!("Failed to run yt-dlp: {}", e), None),
     };
 
     let _ = app.emit(
@@ -570,10 +601,22 @@ async fn run_ytdlp(app: &tauri::AppHandle, id: &str, args: &[String]) -> (bool, 
         let app = app.clone();
         let id_line = id.to_string();
         tokio::spawn(async move {
+            let mut printed_path: Option<String> = None;
             if let Some(out) = stdout {
                 let mut lines = BufReader::new(out).lines();
                 let mut last_emit = Instant::now() - Duration::from_secs(1);
                 while let Ok(Some(line)) = lines.next_line().await {
+                    let trimmed = line.trim();
+                    // yt-dlp `--print after_move:filepath` emits the final path
+                    // as a plain line; progress lines start with "[".
+                    if printed_path.is_none()
+                        && !trimmed.is_empty()
+                        && !trimmed.starts_with('[')
+                        && std::path::Path::new(trimmed).is_file()
+                    {
+                        printed_path = Some(trimmed.to_string());
+                    }
+
                     let is_progress = (line.contains("[download]") && line.contains('%'))
                         || (line.contains("[#") && line.contains('%'));
                     if !is_progress {
@@ -596,6 +639,7 @@ async fn run_ytdlp(app: &tauri::AppHandle, id: &str, args: &[String]) -> (bool, 
                     );
                 }
             }
+            printed_path
         })
     };
 
@@ -616,7 +660,7 @@ async fn run_ytdlp(app: &tauri::AppHandle, id: &str, args: &[String]) -> (bool, 
     };
 
     let ok = child.wait().await.map(|s| s.success()).unwrap_or(false);
-    let _ = progress_handle.await;
+    let printed_path = progress_handle.await.unwrap_or(None);
     let err_text = stderr_handle.await.unwrap_or_default();
 
     let error_line = err_text
@@ -628,7 +672,7 @@ async fn run_ytdlp(app: &tauri::AppHandle, id: &str, args: &[String]) -> (bool, 
         .trim()
         .to_string();
 
-    (ok, error_line)
+    (ok, error_line, printed_path)
 }
 
 /// Start a video download via yt-dlp.
@@ -648,12 +692,15 @@ async fn start_download(
     let settings = settings::load().unwrap_or_default();
     let conns = settings.connections.clamp(1, 64);
     let aria2c_available = find_resource("aria2c.exe").is_some();
+    let limit_mbps = settings.speed_limit_mbps.min(100);
+    let proxy = settings.proxy_url.clone();
 
-    let mut output_dir = resolve_output_dir();
+    let mut output_dir = resolve_output_dir()?;
     // Playlist downloads get their own subfolder inside the chosen location.
     if let Some(name) = playlist_title.as_deref() {
         output_dir = output_dir.join(safe_folder_name(name));
-        std::fs::create_dir_all(&output_dir).ok();
+        std::fs::create_dir_all(&output_dir)
+            .map_err(|e| format!("Cannot create playlist folder {}: {}", output_dir.display(), e))?;
     }
     let dir_str = output_dir.to_string_lossy().to_string();
 
@@ -736,8 +783,10 @@ async fn start_download(
         // with yt-dlp's native downloader.
         let args = build_download_args(
             &url_clone, &quality_clone, &format_clone, conns, aria2c_available, &base_template,
+            limit_mbps, proxy.as_deref(),
         );
-        let (mut ok, mut error_line) = run_ytdlp(&app_clone, &id_clone, &args).await;
+        let (mut ok, mut error_line, mut printed_path) =
+            run_ytdlp(&app_clone, &id_clone, &args).await;
 
         if !ok {
             let low = error_line.to_lowercase();
@@ -747,6 +796,7 @@ async fn start_download(
                 }));
                 build_download_args(
                     &url_clone, &quality_clone, &format_clone, conns, aria2c_available, &fallback_template,
+                    limit_mbps, proxy.as_deref(),
                 )
             } else if aria2c_available
                 && !low.contains("conversion failed")
@@ -757,19 +807,30 @@ async fn start_download(
                 }));
                 build_download_args(
                     &url_clone, &quality_clone, &format_clone, conns, false, &base_template,
+                    limit_mbps, proxy.as_deref(),
                 )
             } else {
                 Vec::new()
             };
 
             if !retry_args.is_empty() {
-                let (retry_ok, retry_err) = run_ytdlp(&app_clone, &id_clone, &retry_args).await;
+                let (retry_ok, retry_err, retry_path) =
+                    run_ytdlp(&app_clone, &id_clone, &retry_args).await;
                 ok = retry_ok;
                 error_line = retry_err;
+                if retry_ok {
+                    printed_path = retry_path;
+                }
             }
         }
 
-        let file_path = if ok { latest_media_file(&output_dir_clone) } else { None };
+        // Prefer the exact path yt-dlp reported; fall back to scanning the
+        // folder for older versions or unusual post-processing.
+        let file_path = if ok {
+            printed_path.or_else(|| latest_media_file(&output_dir_clone))
+        } else {
+            None
+        };
         let friendly_error = friendly_download_error(&error_line);
 
         // Update shared state with the final result, then persist completed items.
@@ -824,31 +885,6 @@ fn get_downloads(state: tauri::State<'_, AppState>) -> Vec<DownloadItem> {
     state.downloads.lock().unwrap().clone()
 }
 
-/// Cancel a download by killing its yt-dlp process
-#[tauri::command]
-async fn cancel_download(_id: String) -> Result<(), String> {
-    // On Windows, we'd track PIDs. For now, use taskkill on yt-dlp processes.
-    // A production version would maintain a HashMap<id, ChildHandle>.
-    #[cfg(windows)]
-    {
-        let _ = tokio::process::Command::new("taskkill")
-            .args(["/F", "/IM", "yt-dlp.exe"])
-            .output()
-            .await;
-    }
-    
-    #[cfg(not(windows))]
-    {
-        let _ = tokio::process::Command::new("pkill")
-            .arg("-f")
-            .arg(format!("yt-dlp.*{}", id))
-            .output()
-            .await;
-    }
-
-    Ok(())
-}
-
 /// Reveal a file in the system file manager
 #[tauri::command]
 fn reveal_in_folder(path: String) -> Result<(), String> {
@@ -866,7 +902,7 @@ fn reveal_in_folder(path: String) -> Result<(), String> {
                 .map_err(|e| e.to_string())?;
         } else {
             std::process::Command::new("explorer")
-                .args(["/select,", &path])
+                .arg(format!("/select,{}", path))
                 .spawn()
                 .map_err(|e| e.to_string())?;
         }
@@ -1072,7 +1108,6 @@ pub fn run() {
             analyze_playlist,
             start_download,
             get_downloads,
-            cancel_download,
             reveal_in_folder,
             scan_page,
             get_settings,
@@ -1087,7 +1122,7 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
-    use super::{extract_pct, extract_speed, extract_eta, parse_playlist_output, safe_folder_name};
+    use super::{build_download_args, extract_pct, extract_speed, extract_eta, parse_playlist_output, safe_folder_name};
 
     #[test]
     fn parses_yt_dlp_progress_line() {
@@ -1139,6 +1174,25 @@ mod tests {
         assert_eq!(safe_folder_name("CON"), "CON_playlist");
         let long = "x".repeat(200);
         assert!(safe_folder_name(&long).chars().count() <= 80);
+    }
+
+    #[test]
+    fn download_args_carry_limits_proxy_and_path_report() {
+        let args = build_download_args(
+            "https://example.com/v",
+            "720p",
+            "mp4",
+            8,
+            false,
+            "%(title)s.%(ext)s",
+            5,
+            Some("http://127.0.0.1:8080"),
+        );
+        let has = |a: &str, b: &str| args.windows(2).any(|w| w[0] == a && w[1] == b);
+        assert!(has("--limit-rate", "5M"));
+        assert!(has("--print", "after_move:filepath"));
+        assert!(has("--concurrent-fragments", "8"));
+        assert!(!args.iter().any(|a| a == "--proxy"), "proxy is applied by ytdlp_command");
     }
 
     #[test]

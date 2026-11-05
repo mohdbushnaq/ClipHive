@@ -3,11 +3,14 @@ use std::collections::HashSet;
 
 /// Fetch a webpage and extract all video sources found in the HTML.
 pub async fn scan(url: &str) -> Result<PageScanResult, String> {
-    let client = reqwest::Client::builder()
+    let s = crate::settings::load().unwrap_or_default();
+    let mut builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
-        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36")
-        .build()
-        .map_err(|e| e.to_string())?;
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36");
+    if let Some(p) = s.proxy_url.as_deref().map(str::trim).filter(|p| !p.is_empty()) {
+        builder = builder.proxy(reqwest::Proxy::all(p).map_err(|e| format!("Invalid proxy: {}", e))?);
+    }
+    let client = builder.build().map_err(|e| e.to_string())?;
 
     let html = client.get(url).send().await.map_err(|e| format!("Could not reach page: {}", e))?.text().await.map_err(|e| e.to_string())?;
 

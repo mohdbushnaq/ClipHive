@@ -1,6 +1,6 @@
 {
   "productName": "ClipHive",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "identifier": "com.cliphive.app",
   "build": {
     "beforeBuildCommand": "npm run build",
@@ -10,7 +10,7 @@
   "app": {
     "windows": [
       {
-        "title": "ClipHive — Every video on any page",
+        "title": "ClipHive - Every video on any page",
         "width": 960,
         "height": 680,
         "minWidth": 720,
