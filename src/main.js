@@ -34,7 +34,7 @@ const activeDl = new Map();   // id -> {title, thumbnail, file_path, dir}
 let settings = null;          // working copy of AppSettings
 let downloadQueue = [];       // jobs waiting for a free download slot
 let activeDownloads = 0;      // download processes currently running
-const runningDownloads = new Set(); // ids started by the download queue
+const finishedDownloads = new Set(); // ids already counted as finished (race guard)
 
 function showError(msg){ errorMsg.textContent = msg; errorMsg.hidden = false; }
 function clearError(){ errorMsg.hidden = true; errorMsg.textContent=''; }
@@ -195,8 +195,7 @@ function startQueuedJob(job){
   if (job.playlistName) payload.playlist_title = job.playlistName;
 
   invoke('start_download', payload).then(id => {
-    if (id) {
-      runningDownloads.add(id);
+    if (id && !finishedDownloads.has(id)) {
       activeDl.set(id, { title: job.title || 'Video', thumbnail: thumb, file_path: null, dir: null });
     }
     if (job.resolve) job.resolve(id);
@@ -401,10 +400,14 @@ listen('download-event', (event) => {
   }
 
   // Keep the download queue moving: one finished/failed job starts the next.
-  if ((status==='complete' || status==='failed') && runningDownloads.has(id)) {
-    runningDownloads.delete(id);
-    activeDownloads = Math.max(0, activeDownloads - 1);
-    pumpDownloadQueue();
+  // `finishedDownloads` also covers the rare case where an event arrives before
+  // the invoke() response that gave us the id.
+  if (status==='complete' || status==='failed') {
+    if (!finishedDownloads.has(id)) {
+      finishedDownloads.add(id);
+      if (activeDownloads > 0) activeDownloads = Math.max(0, activeDownloads - 1);
+      pumpDownloadQueue();
+    }
   }
 
   if (status==='complete' && document.getElementById('tab-library').classList.contains('active')) {
